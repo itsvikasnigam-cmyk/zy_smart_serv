@@ -121,6 +121,49 @@ python backend/tools/dev_seed_users.py --client-id <CLIENT_ID>
 python backend/tools/dev_inbox_smoke.py --listen-seconds 6
 ```
 
+## Billing (M5)
+
+**App:** `backend/apps/billing_api/main.py` — run on **port 8086** (see HANDOFF *Billing (M5 layout)*). Webhook endpoints:
+
+- `POST http://127.0.0.1:8086/webhooks/razorpay` — header `X-Razorpay-Signature` (hex HMAC-SHA256 of the raw JSON body using `BILLING_RAZORPAY_WEBHOOK_SECRET`).
+- `POST http://127.0.0.1:8086/webhooks/paddle` — header `Paddle-Signature` (`ts=...;h1=...` per Paddle Billing notification signing, secret `BILLING_PADDLE_WEBHOOK_SECRET`).
+
+**Prereq:** migrate DB (`0004_billing`), set webhook secrets in `backend/.env` or `$env:` (see `backend/.env.example`). Subscription payloads must carry your `api_clients.id` as a UUID string: Razorpay `payload.payload.subscription.entity.notes.client_id`; Paddle `data.custom_data.client_id`. Replaying the same provider event id returns `{"status":"duplicate"}` (no double update).
+
+**Razorpay sandbox — compute signature and POST (PowerShell):**
+
+```powershell
+$env:PYTHONPATH = "$PWD"
+$env:BILLING_RAZORPAY_WEBHOOK_SECRET = "devsecret_replace_me"
+$clientId = "<paste api_clients.id from dev_seed>"
+$body = '{"entity":"event","id":"evt_localtest_1","event":"subscription.activated","payload":{"subscription":{"entity":{"id":"sub_localtest_1","status":"active","plan_id":"plan_any","notes":{"client_id":"' + $clientId + '"},"current_end":null}}}}'
+$sig = python -c "import hmac,hashlib,os,sys; b=sys.argv[1].encode(); print(hmac.new(os.environ['BILLING_RAZORPAY_WEBHOOK_SECRET'].encode(),b,hashlib.sha256).hexdigest())" $body
+curl.exe -sS -X POST "http://127.0.0.1:8086/webhooks/razorpay" -H "Content-Type: application/json" -H "X-Razorpay-Signature: $sig" -d $body
+```
+
+Run the same `curl` line again to see `{"status":"duplicate"}`.
+
+**Paddle sandbox — example header (replace body + secrets with a real Paddle test notification):**
+
+```powershell
+$env:BILLING_PADDLE_WEBHOOK_SECRET = "pdl_ntfset_..."
+$body = '{"event_id":"evt_paddle_test_1","event_type":"subscription.updated","data":{"id":"sub_paddle_1","status":"active","custom_data":{"client_id":"<api_clients.id>"},"items":[{"price":{"id":"pri_123"}}],"current_billing_period":{"ends_at":"2099-01-01T00:00:00Z"}}}'
+$ts = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+$utf8 = [System.Text.Encoding]::UTF8
+$msg = $utf8.GetBytes("$ts`:") + $utf8.GetBytes($body)
+$hmac = [System.Security.Cryptography.HMACSHA256]::new($utf8.GetBytes($env:BILLING_PADDLE_WEBHOOK_SECRET))
+$h1 = -join ($hmac.ComputeHash($msg) | ForEach-Object { $_.ToString("x2") })
+$hdr = "ts=$ts;h1=$h1"
+curl.exe -sS -X POST "http://127.0.0.1:8086/webhooks/paddle" -H "Content-Type: application/json" -H "Paddle-Signature: $hdr" -d $body
+```
+
+**Populate `bill_plans` (optional)** so `plan_id` / Paddle price id map to `starter` \| `growth` \| `pro`:
+
+```sql
+INSERT INTO bill_plans (provider, external_plan_id, plan_code, display_name)
+VALUES ('razorpay','plan_any','starter','Dev placeholder');
+```
+
 ## Flutter (`flutter_app/`)
 
 Cross-platform shell for **client_api**: `POST /auth/login`, `GET /auth/me`, owner/agent **inbox** (`GET /inbox/chats`, `GET /inbox/chats/{id}`, assign/reply/typing), **WebSocket** `ws://<host>:<port>/ws?token=<JWT>`, and a **super_admin** control-plane placeholder (static copy until a real admin API exists).
@@ -132,6 +175,8 @@ cd flutter_app
 flutter create . --project-name zy_smart_flutter --org com.zysmart.serv --platforms=android,windows
 flutter pub get
 ```
+
+You need this step before `flutter run -d windows` or the Android build; otherwise Flutter reports **No Windows desktop project configured** (or missing `android/`). See `flutter_app/README.md` for details and git path notes.
 
 **API base URL** defaults to `http://127.0.0.1:8085`. Override at build/run:
 

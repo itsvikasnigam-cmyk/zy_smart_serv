@@ -48,6 +48,16 @@ class Settings(BaseSettings):
         description="Comma-separated CORS origins for client_api (set explicit origins in non-dev).",
     )
 
+    # billing_api (M5: Razorpay + Paddle webhooks)
+    billing_razorpay_webhook_secret: str = Field(
+        default="",
+        description="Razorpay webhook signing secret (Dashboard → Webhooks). Required to accept POST /webhooks/razorpay.",
+    )
+    billing_paddle_webhook_secret: str = Field(
+        default="",
+        description="Paddle Billing notification destination secret. Required to accept POST /webhooks/paddle.",
+    )
+
 
 settings = Settings()
 

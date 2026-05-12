@@ -21,9 +21,10 @@ Use this file at the start of **every** Cursor chat (stem or module). Update it 
 
 - FastAPI **WA Gateway** (`backend/apps/wa_gateway/`): Meta verify, inbound store-first + dedupe `meta_msg_id`, routing by `phone_number_id` → `wa_numbers`, debounce batch rows, status webhook → `wa_status_events` / `wa_outbox` update.
 - **AI Engine stub** (`backend/apps/ai_engine/`): `POST /ai/respond`.
+- **Billing (M5)** (`backend/apps/billing_api/`): Alembic `0004_billing` (`bill_plans`, `bill_subscriptions`, `bill_events` with unique `(provider, provider_event_id)`); signed webhooks `POST /webhooks/razorpay` and `POST /webhooks/paddle` (default local **port 8086**); updates `api_clients.billing_provider`, `entitlement_plan`, `billing_plan_code` + upserts `bill_subscriptions`. Linking: Razorpay `payload.payload.subscription.entity.notes.client_id` (UUID string); Paddle `data.custom_data.client_id`. Optional `bill_plans` rows map provider price/plan ids → `plan_code` / `entitlement_plan` via notes `entitlement_plan` / `entitlement`.
 - **Workers**: `batch_processor.py` (seal batch → call AI → enqueue `wa_outbox`), `outbox_sender.py` (Meta send when `META_ACCESS_TOKEN` set).
 - **client_api (M3/M4)** (`backend/apps/client_api/`): JWT login, owner/agent/super_admin RBAC, inbox list/detail, assign/reassign/unassign/escalate, typing presence, agent reply (mirrors `inbox_messages` + enqueues `wa_outbox` `AGENT_REPLY`), `/ws` WebSocket emitting `message_new`, `assignment_changed`, `typing`, `chat_state_changed`. Cross-process events (gateway/batch_processor → WS) are fanned out by an in-process `DBPoller` over `inbox_messages`, `wa_outbox`, and `chat_assignments`. New env: `CLIENT_API_JWT_SECRET`, `CLIENT_API_JWT_TTL_MINUTES`, `CLIENT_API_EVENT_POLL_MS`, `CLIENT_API_CORS_ORIGINS`.
-- **Alembic**: `0001_init_core`, `0002_reliability_queueing`, `0003_wa_trial_map`; `backend/alembic.ini` uses `%(here)s/migrations`. No new migration needed for client_api — schema already has `api_users`, `chat_assignments`, `chat_presence`.
+- **Alembic**: `0001_init_core`, `0002_reliability_queueing`, `0003_wa_trial_map`, `0004_billing`; `backend/alembic.ini` uses `%(here)s/migrations`. No migration needed for client_api — schema already has `api_users`, `chat_assignments`, `chat_presence`.
 - **Dev helpers**: `backend/tools/dev_seed.py`, `dev_send_inbound.py`, `dev_check.py`, `dev_seed_users.py` (owner/agent), `dev_inbox_smoke.py` (drives the assign flow + watches WS without Flutter).
 - **Tests**: `tests/` — `pytest` for `meta_payload` / `status_payload` extractors, dev inbound JSON contract; optional live gateway POST when `RUN_WA_GATEWAY_E2E=1` (see `tests/test_gateway_e2e_optional.py` and README).
 - **README**: local smoke steps, **10-step non-dev / staging smoke checklist**, automated test command.
@@ -33,7 +34,7 @@ Use this file at the start of **every** Cursor chat (stem or module). Update it 
 1. **M2 Gateway**: `wa_trial_map`; tighten SQL casts in gateway (`::uuid` vs SQLAlchemy binds); optional `X-ZY-Client-Id` removal once trial map exists.
 2. **M1 AI**: Replace stub with Llama + quality gate + GPT-4 judge/fallback; `NEEDS_OWNER_DATA` + fixed customer string; urgent bypass. **`ops_runtime_config` (read by `/ai/respond`):** `ai.urgent_bypass_substrings` (JSON array of substrings → urgent REPLY path) and `ai.needs_owner_data_customer_reply` (optional string override for the fixed NEEDS_OWNER_DATA customer line). When the batch processor handles `HANDOFF` action, it should set `inbox_chats.state='PENDING_AGENT'` and (ideally) `NOTIFY 'chat_events'` so `client_api` can emit `chat_state_changed` without polling.
 3. **M4 Inbox**: ~~assignment/reassignment APIs + WS events; agent reply path → outbox `AGENT_REPLY`~~ — **landed (client_api).** Follow-ups: swap `DBPoller` for Postgres `LISTEN/NOTIFY`; per-chat pagination cursors; idempotency-key header for `POST /inbox/chats/{id}/reply` (today the key is derived from generated `inbox_messages.id`, so retries from the client create a second logical message).
-4. **M5 Billing**: Razorpay + Paddle webhooks; `bill_plans` / `bill_subscriptions` tables if not fully migrated.
+4. **M5 Billing**: ~~core tables + webhooks~~ **landed** (`0004_billing`, `billing_api`). Follow-ups: checkout/session creation APIs; populate `bill_plans` for your Razorpay `plan_id` / Paddle price ids; Paddle `transaction.*` handling; Razorpay non-subscription payment events if needed.
 5. **Flutter**: `flutter_app/` — login, owner/agent inbox shell (REST + `/ws`), super_admin control-plane placeholder; README **Flutter** + `flutter_app/README.md`.
 6. **M10 Release**: staging DB + automated smoke script + checklist. *(Minimal pytest + README/HANDOFF smoke checklist landed; extend with testcontainers or CI job as needed.)*
 
@@ -65,7 +66,14 @@ python backend\workers\outbox_sender.py
 # client_api (M3/M4): inbox + assignments + WS
 $env:CLIENT_API_JWT_SECRET="$(python -c "import secrets; print(secrets.token_urlsafe(48))")"
 python -m uvicorn backend.apps.client_api.main:app --reload --port 8085
+
+# billing_api (M5): Razorpay + Paddle webhooks (requires secrets from provider dashboards)
+$env:BILLING_RAZORPAY_WEBHOOK_SECRET="<Razorpay webhook signing secret>"
+$env:BILLING_PADDLE_WEBHOOK_SECRET="<Paddle notification destination secret>"
+python -m uvicorn backend.apps.billing_api.main:app --reload --port 8086
 ```
+
+Meta env (`.env` or `$env:`): `META_ACCESS_TOKEN`, `META_APP_SECRET`, `META_VERIFY_TOKEN`, `META_GRAPH_VERSION` (default v22.0). Billing env: `BILLING_RAZORPAY_WEBHOOK_SECRET`, `BILLING_PADDLE_WEBHOOK_SECRET` (see `backend/.env.example`).
 
 client_api smoke (drives the assign flow without Flutter):
 
@@ -80,7 +88,22 @@ python backend\tools\dev_send_inbound.py --meta-phone-number-id "NUMERIC_ID_FROM
 python backend\tools\dev_inbox_smoke.py --listen-seconds 6
 ```
 
-Meta env (`.env` or `$env:`): `META_ACCESS_TOKEN`, `META_APP_SECRET`, `META_VERIFY_TOKEN`, `META_GRAPH_VERSION` (default v22.0).
+## Billing (M5 layout)
+
+**Choice:** dedicated FastAPI app `backend/apps/billing_api/` (default **port 8086**), parallel to `client_api` (8085), so provider webhook signing and raw-body verification stay separate from Meta WA webhooks and JWT APIs.
+
+**Webhook URLs** (no version prefix; configure these in Razorpay / Paddle dashboards for your deployed host):
+
+| Provider | Method | Path |
+|----------|--------|------|
+| Razorpay | `POST` | `/webhooks/razorpay` |
+| Paddle Billing | `POST` | `/webhooks/paddle` |
+
+**Linking to `api_clients`:** Razorpay subscription payloads must include `notes.client_id` (UUID string). Paddle subscription payloads must include `custom_data.client_id`. Optional `bill_plans` rows map `external_plan_id` → `plan_code`; otherwise set `notes.entitlement_plan` / `custom_data.entitlement_plan` to `trial` \| `starter` \| `growth` \| `pro` \| `churned` when needed.
+
+**Idempotency:** `bill_events` unique `(provider, provider_event_id)`; duplicate deliveries return JSON `{"status":"duplicate"}` and do not re-apply `api_clients` updates.
+
+**Manual / sandbox calls:** README section *Billing (M5)* — PowerShell + `curl.exe` examples with a small Python helper to compute `X-Razorpay-Signature`.
 
 ## Multi-chat workflow
 
@@ -90,7 +113,7 @@ Meta env (`.env` or `$env:`): `META_ACCESS_TOKEN`, `META_APP_SECRET`, `META_VERI
 | **M2** | Webhooks, routing, outbox, Meta | This file + `backend/apps/wa_gateway/` |
 | **M1** | AI pipeline only | This file + `backend/apps/ai_engine/` |
 | **M4** | Inbox, assignments, WS | This file + future `client_api` / inbox modules |
-| **M5** | Billing | This file + migrations + webhook routes |
+| **M5** | Billing | This file + `backend/migrations/versions/` + `backend/apps/billing_api/` |
 | **Flutter** | UI only | This file + `flutter_app/` |
 
 **Rule:** Each module chat pastes **this file** (or `@HANDOFF.md`) first, then only the files for that module. Stem merges when acceptance criteria met.
@@ -264,6 +287,7 @@ Acceptance:
 
 ## Last updated
 
+- 2026-05-13 — **M5 billing**: Alembic `0004_billing` (`bill_plans`, `bill_subscriptions`, `bill_events`); FastAPI `billing_api` on port **8086** with signed `POST /webhooks/razorpay` and `POST /webhooks/paddle`; `BILLING_*` env keys in `backend/.env.example`; README billing curl/PowerShell; HANDOFF **Billing (M5 layout)** subsection.
 - 2026-05-13 — **Flutter `flutter_app/`**: scaffold + client_api login/inbox/WS shell + super_admin stub; README Flutter section; Chat G block points at `flutter_app/`.
 - 2026-05-13 — **M10-lite testing**: `tests/` pytest (meta/status extract, dev inbound contract, optional gateway e2e); README **10-step staging smoke** + automated test section; `backend/tools/__init__.py` for imports; `build_meta_inbound_webhook_payload` in `dev_send_inbound.py`.
 - 2026-05-12 — multi-chat stem; added **Paste blocks for new Cursor chats** (Chats A–H).
