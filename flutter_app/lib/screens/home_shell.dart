@@ -36,7 +36,7 @@ class _HomeShellState extends State<HomeShell> {
       );
     }
 
-    final pages = const [
+    const pages = [
       InboxChatsScreen(),
       AccountScreen(),
     ];
