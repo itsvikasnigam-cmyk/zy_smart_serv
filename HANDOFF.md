@@ -29,7 +29,7 @@ Use this file at the start of **every** Cursor chat (stem or module). Update it 
 ## Known gaps / next work (pick one module per chat)
 
 1. **M2 Gateway**: `wa_trial_map`; tighten SQL casts in gateway (`::uuid` vs SQLAlchemy binds); optional `X-ZY-Client-Id` removal once trial map exists.
-2. **M1 AI**: Replace stub with Llama + quality gate + GPT-4 judge/fallback; `NEEDS_OWNER_DATA` + fixed customer string; urgent bypass.
+2. **M1 AI**: Replace stub with Llama + quality gate + GPT-4 judge/fallback; `NEEDS_OWNER_DATA` + fixed customer string; urgent bypass. **`ops_runtime_config` (read by `/ai/respond`):** `ai.urgent_bypass_substrings` (JSON array of substrings → urgent REPLY path) and `ai.needs_owner_data_customer_reply` (optional string override for the fixed NEEDS_OWNER_DATA customer line).
 3. **M4 Inbox**: assignment/reassignment APIs + WS events; agent reply path → outbox `AGENT_REPLY`.
 4. **M5 Billing**: Razorpay + Paddle webhooks; `bill_plans` / `bill_subscriptions` tables if not fully migrated.
 5. **Flutter**: client + super-admin shells; consume APIs above.
@@ -236,3 +236,4 @@ Acceptance:
 ## Last updated
 
 - 2026-05-12 — multi-chat stem; added **Paste blocks for new Cursor chats** (Chats A–H).
+- 2026-05-12 — M1: documented `ops_runtime_config` keys `ai.urgent_bypass_substrings` and `ai.needs_owner_data_customer_reply` in gap list.

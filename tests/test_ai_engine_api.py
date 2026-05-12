@@ -61,6 +61,21 @@ def test_post_ai_respond_detects_hindi(_mock: object) -> None:
 
 @patch(
     "backend.apps.ai_engine.main.load_ai_runtime_strings",
+    return_value=([], None),
+)
+def test_post_ai_respond_handoff_routing_intent(_mock: object) -> None:
+    client = TestClient(app)
+    r = client.post("/ai/respond", json=_minimal_payload("Please connect me to a real person"))
+    assert r.status_code == 200
+    parsed = AIResponse.model_validate(r.json())
+    assert parsed.action == "HANDOFF"
+    assert parsed.routing_intent == "human_request"
+    assert parsed.reply_text is None
+    assert parsed.handoff_reason == "customer_requested_human"
+
+
+@patch(
+    "backend.apps.ai_engine.main.load_ai_runtime_strings",
     return_value=(["priority"], None),
 )
 def test_post_ai_respond_urgent_bypass_from_config(_mock: object) -> None:
