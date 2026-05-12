@@ -167,6 +167,12 @@ async def meta_inbound(
 
     Routing: wa_numbers (prod/BYON) or wa_trial_map (shared trial line). In dev only,
     X-ZY-Client-Id may still force client_id when DB mapping is absent.
+
+    NOTE (M3/M4 client_api): the gateway runs in a different process from
+    ``client_api``; we do not push WS events from here. ``client_api`` runs a
+    DBPoller that detects new ``inbox_messages`` rows and fans them to connected
+    websocket subscribers. If a future deployment splits Postgres away or needs
+    lower latency, swap the poller for LISTEN/NOTIFY emitted here.
     """
     body = await request.body()
     _validate_meta_signature(body, x_hub_signature_256)

@@ -43,3 +43,40 @@ Prereq: Postgres running locally with db `zysmart` and user/pass `postgres/postg
 6) Wait ~5 seconds and check DB outputs:
 - `python backend/tools/dev_check.py`
 
+## Client API (M3/M4 inbox + assignments + WebSocket)
+
+Auth: HS256 JWT (`Authorization: Bearer <token>`). Roles: `owner`, `agent`, `super_admin`.
+
+Endpoints (base `http://127.0.0.1:8085`):
+- `POST /auth/login` — `{ email, password }` → `{ access_token, expires_at, user }`
+- `GET  /auth/me`
+- `GET  /users?role=agent` — list users in the caller's client
+- `GET  /inbox/chats?state=&assigned=me|unassigned|<user_id>&q=&limit=` — list
+- `GET  /inbox/chats/{chat_id}` — detail (messages from `inbox_messages` UNION outbound `wa_outbox` rows; plus `pending_outbound` for transparency)
+- `POST /inbox/chats/{chat_id}/assign` — `{ user_id, reason?, note? }` (owner / super_admin)
+- `POST /inbox/chats/{chat_id}/reassign` — same body; ends any ACTIVE assignment first
+- `POST /inbox/chats/{chat_id}/unassign` — `{ reason? }` (agent may only unassign their own chat)
+- `POST /inbox/chats/{chat_id}/escalate` — `{ to_user_id?, reason? }` (assigns when `to_user_id` set, else sets state=`PENDING_AGENT`)
+- `POST /inbox/chats/{chat_id}/typing` — `{ state: "typing"|"stopped", ttl_seconds?: 5 }`
+- `POST /inbox/chats/{chat_id}/reply` — `{ text }` (owner/agent/super_admin; agents must own the chat)
+
+WebSocket: `ws://127.0.0.1:8085/ws?token=<JWT>` (super_admin must also pass `&client_id=`). Server pushes:
+
+```
+{ "event": "hello" | "message_new" | "assignment_changed" | "typing" | "chat_state_changed", "data": {...}, "ts": "<iso>" }
+```
+
+Run it:
+
+```powershell
+$env:CLIENT_API_JWT_SECRET = "$(python -c \"import secrets; print(secrets.token_urlsafe(48))\")"
+python -m uvicorn backend.apps.client_api.main:app --reload --port 8085
+```
+
+Smoke (after `dev_seed.py` + an inbound from `dev_send_inbound.py`):
+
+```powershell
+python backend/tools/dev_seed_users.py --client-id <CLIENT_ID>
+python backend/tools/dev_inbox_smoke.py --listen-seconds 6
+```
+

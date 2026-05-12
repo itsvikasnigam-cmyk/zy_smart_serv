@@ -28,6 +28,26 @@ class Settings(BaseSettings):
         description="Outbox: SENDING lease; if a worker dies mid-send, row becomes eligible again after this (see worker comments on duplicates)",
     )
 
+    # client_api (M3/M4: inbox + assignments + WS)
+    client_api_jwt_secret: str = Field(
+        default="dev-insecure-change-me",
+        description="HS256 signing secret for client_api JWTs. MUST be set to a strong random value in staging/prod.",
+    )
+    client_api_jwt_ttl_minutes: int = Field(
+        default=720,
+        ge=5,
+        description="Access token lifetime for client_api login JWTs (default 12h).",
+    )
+    client_api_event_poll_ms: int = Field(
+        default=500,
+        ge=100,
+        description="client_api WS background poll interval (ms) for cross-process events (new messages, assignments, outbox).",
+    )
+    client_api_cors_origins: str = Field(
+        default="*",
+        description="Comma-separated CORS origins for client_api (set explicit origins in non-dev).",
+    )
+
 
 settings = Settings()
 

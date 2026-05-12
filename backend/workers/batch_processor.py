@@ -75,6 +75,12 @@ def run_once() -> int:
     - call AI engine stub
     - enqueue a single outbox message (idempotent)
     - mark batch PROCESSED
+
+    NOTE (M3/M4 client_api): this worker is in a separate process. WS fan-out
+    is the client_api DBPoller's responsibility — it picks up the new wa_outbox
+    row (kind='AI_REPLY') and pushes ``message_new`` to subscribed agents. Do
+    not import client_api from this worker. If you need lower-latency fan-out
+    later, emit a Postgres ``NOTIFY 'chat_events'`` and have client_api LISTEN.
     """
     cfg = _get_debounce_config()
     processed = 0

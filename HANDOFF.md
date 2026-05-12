@@ -22,17 +22,18 @@ Use this file at the start of **every** Cursor chat (stem or module). Update it 
 - FastAPI **WA Gateway** (`backend/apps/wa_gateway/`): Meta verify, inbound store-first + dedupe `meta_msg_id`, routing by `phone_number_id` → `wa_numbers`, debounce batch rows, status webhook → `wa_status_events` / `wa_outbox` update.
 - **AI Engine stub** (`backend/apps/ai_engine/`): `POST /ai/respond`.
 - **Workers**: `batch_processor.py` (seal batch → call AI → enqueue `wa_outbox`), `outbox_sender.py` (Meta send when `META_ACCESS_TOKEN` set).
-- **Alembic**: `0001_init_core`, `0002_reliability_queueing`; `backend/alembic.ini` uses `%(here)s/migrations`.
-- **Dev helpers**: `backend/tools/dev_seed.py`, `dev_send_inbound.py`, `dev_check.py`.
+- **client_api (M3/M4)** (`backend/apps/client_api/`): JWT login, owner/agent/super_admin RBAC, inbox list/detail, assign/reassign/unassign/escalate, typing presence, agent reply (mirrors `inbox_messages` + enqueues `wa_outbox` `AGENT_REPLY`), `/ws` WebSocket emitting `message_new`, `assignment_changed`, `typing`, `chat_state_changed`. Cross-process events (gateway/batch_processor → WS) are fanned out by an in-process `DBPoller` over `inbox_messages`, `wa_outbox`, and `chat_assignments`. New env: `CLIENT_API_JWT_SECRET`, `CLIENT_API_JWT_TTL_MINUTES`, `CLIENT_API_EVENT_POLL_MS`, `CLIENT_API_CORS_ORIGINS`.
+- **Alembic**: `0001_init_core`, `0002_reliability_queueing`, `0003_wa_trial_map`; `backend/alembic.ini` uses `%(here)s/migrations`. No new migration needed for client_api — schema already has `api_users`, `chat_assignments`, `chat_presence`.
+- **Dev helpers**: `backend/tools/dev_seed.py`, `dev_send_inbound.py`, `dev_check.py`, `dev_seed_users.py` (owner/agent), `dev_inbox_smoke.py` (drives the assign flow + watches WS without Flutter).
 - **README**: local smoke steps.
 
 ## Known gaps / next work (pick one module per chat)
 
 1. **M2 Gateway**: `wa_trial_map`; tighten SQL casts in gateway (`::uuid` vs SQLAlchemy binds); optional `X-ZY-Client-Id` removal once trial map exists.
-2. **M1 AI**: Replace stub with Llama + quality gate + GPT-4 judge/fallback; `NEEDS_OWNER_DATA` + fixed customer string; urgent bypass. **`ops_runtime_config` (read by `/ai/respond`):** `ai.urgent_bypass_substrings` (JSON array of substrings → urgent REPLY path) and `ai.needs_owner_data_customer_reply` (optional string override for the fixed NEEDS_OWNER_DATA customer line).
-3. **M4 Inbox**: assignment/reassignment APIs + WS events; agent reply path → outbox `AGENT_REPLY`.
+2. **M1 AI**: Replace stub with Llama + quality gate + GPT-4 judge/fallback; `NEEDS_OWNER_DATA` + fixed customer string; urgent bypass. **`ops_runtime_config` (read by `/ai/respond`):** `ai.urgent_bypass_substrings` (JSON array of substrings → urgent REPLY path) and `ai.needs_owner_data_customer_reply` (optional string override for the fixed NEEDS_OWNER_DATA customer line). When the batch processor handles `HANDOFF` action, it should set `inbox_chats.state='PENDING_AGENT'` and (ideally) `NOTIFY 'chat_events'` so `client_api` can emit `chat_state_changed` without polling.
+3. **M4 Inbox**: ~~assignment/reassignment APIs + WS events; agent reply path → outbox `AGENT_REPLY`~~ — **landed (client_api).** Follow-ups: swap `DBPoller` for Postgres `LISTEN/NOTIFY`; per-chat pagination cursors; idempotency-key header for `POST /inbox/chats/{id}/reply` (today the key is derived from generated `inbox_messages.id`, so retries from the client create a second logical message).
 4. **M5 Billing**: Razorpay + Paddle webhooks; `bill_plans` / `bill_subscriptions` tables if not fully migrated.
-5. **Flutter**: client + super-admin shells; consume APIs above.
+5. **Flutter**: client + super-admin shells; consume APIs above (REST contract documented in `backend/apps/client_api/`, WS at `/ws?token=<JWT>`).
 6. **M10 Release**: staging DB + automated smoke script + checklist.
 
 ## How to run (minimal)
@@ -59,6 +60,23 @@ python -m uvicorn backend.apps.ai_engine.main:app --reload --port 8083
 $env:AI_ENGINE_URL="http://127.0.0.1:8083"
 python backend\workers\batch_processor.py
 python backend\workers\outbox_sender.py
+
+# client_api (M3/M4): inbox + assignments + WS
+$env:CLIENT_API_JWT_SECRET="$(python -c "import secrets; print(secrets.token_urlsafe(48))")"
+python -m uvicorn backend.apps.client_api.main:app --reload --port 8085
+```
+
+client_api smoke (drives the assign flow without Flutter):
+
+```powershell
+# 1) seed a client + wa_number once (prints CLIENT_ID)
+python backend\tools\dev_seed.py --meta-phone-number-id "NUMERIC_ID_FROM_META"
+# 2) seed an owner + agent user for that CLIENT_ID
+python backend\tools\dev_seed_users.py --client-id <CLIENT_ID>
+# 3) send a synthetic inbound to create a chat
+python backend\tools\dev_send_inbound.py --meta-phone-number-id "NUMERIC_ID_FROM_META" --from +911234567890 --text "hello"
+# 4) drive login → assign → typing → reply → reassign → unassign + watch /ws
+python backend\tools\dev_inbox_smoke.py --listen-seconds 6
 ```
 
 Meta env (`.env` or `$env:`): `META_ACCESS_TOKEN`, `META_APP_SECRET`, `META_VERIFY_TOKEN`, `META_GRAPH_VERSION` (default v22.0).
@@ -237,3 +255,4 @@ Acceptance:
 
 - 2026-05-12 — multi-chat stem; added **Paste blocks for new Cursor chats** (Chats A–H).
 - 2026-05-12 — M1: documented `ops_runtime_config` keys `ai.urgent_bypass_substrings` and `ai.needs_owner_data_customer_reply` in gap list.
+- 2026-05-12 — **M3/M4 client_api landed**: JWT login, RBAC, inbox list/detail, assign/reassign/unassign/escalate, typing, agent reply (mirrors `inbox_messages` + outbox `AGENT_REPLY`), `/ws` with `message_new` / `assignment_changed` / `typing` / `chat_state_changed`. Cross-process events via in-process `DBPoller` over `inbox_messages` / `wa_outbox` / `chat_assignments`. New env keys; new dev tools `dev_seed_users.py` + `dev_inbox_smoke.py`.
