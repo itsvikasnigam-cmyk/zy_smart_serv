@@ -14,6 +14,9 @@ def main() -> int:
     - api_clients
     - wa_numbers with meta_phone_number_id mapping to that client
 
+    Safe to run multiple times: if this meta_phone_number_id or DEV_WA_PHONE_E164
+    already exists, updates or no-ops instead of failing on unique constraints.
+
     Usage:
       python backend/tools/dev_seed.py --meta-phone-number-id <PHONE_NUMBER_ID>
     """
@@ -42,6 +45,82 @@ def main() -> int:
     phone_e164 = os.environ.get("DEV_WA_PHONE_E164", "+911111111111")
 
     with engine.begin() as conn:
+        row = conn.execute(
+            text(
+                """
+                SELECT id, client_id
+                FROM wa_numbers
+                WHERE meta_phone_number_id = :pid
+                LIMIT 1
+                """
+            ),
+            {"pid": meta_phone_number_id},
+        ).fetchone()
+        if row:
+            wa_id, client_id = row[0], row[1]
+            print("Already seeded (meta_phone_number_id already mapped).")
+            print(f"CLIENT_ID={client_id}")
+            print(f"WA_NUMBER_ID={wa_id}")
+            print(f"META_PHONE_NUMBER_ID={meta_phone_number_id}")
+            return 0
+
+        row = conn.execute(
+            text(
+                """
+                SELECT id, client_id
+                FROM wa_numbers
+                WHERE phone_e164 = :pe
+                LIMIT 1
+                """
+            ),
+            {"pe": phone_e164},
+        ).fetchone()
+        if row:
+            wa_id, cid = row[0], row[1]
+            if cid is None:
+                client_id = conn.execute(
+                    text(
+                        """
+                        INSERT INTO api_clients (business_name, category, entitlement_plan)
+                        VALUES (:bn, :cat, 'trial')
+                        RETURNING id
+                        """
+                    ),
+                    {"bn": business_name, "cat": category},
+                ).scalar_one()
+                conn.execute(
+                    text(
+                        """
+                        UPDATE wa_numbers
+                        SET meta_phone_number_id = :pid,
+                            client_id = CAST(:cid AS uuid),
+                            type = 'PROD',
+                            ownership = 'ZY_OWNED',
+                            status = 'active'
+                        WHERE id = CAST(:wid AS uuid)
+                        """
+                    ),
+                    {"pid": meta_phone_number_id, "cid": str(client_id), "wid": str(wa_id)},
+                )
+            else:
+                client_id = cid
+                conn.execute(
+                    text(
+                        """
+                        UPDATE wa_numbers
+                        SET meta_phone_number_id = :pid,
+                            status = 'active'
+                        WHERE id = CAST(:wid AS uuid)
+                        """
+                    ),
+                    {"pid": meta_phone_number_id, "wid": str(wa_id)},
+                )
+            print("Seeded OK (reused existing wa_numbers row for DEV_WA_PHONE_E164; set / refreshed meta_phone_number_id).")
+            print(f"CLIENT_ID={client_id}")
+            print(f"WA_NUMBER_ID={wa_id}")
+            print(f"META_PHONE_NUMBER_ID={meta_phone_number_id}")
+            return 0
+
         client_id = conn.execute(
             text(
                 """
@@ -73,4 +152,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

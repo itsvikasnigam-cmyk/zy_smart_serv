@@ -83,7 +83,7 @@ def run_once() -> int:
         batches = conn.execute(
             text(
                 """
-                SELECT id, chat_id
+                SELECT id, chat_id, opened_at
                 FROM inbox_inbound_batches
                 WHERE status = 'OPEN' AND process_after <= now()
                 ORDER BY process_after ASC
@@ -92,29 +92,33 @@ def run_once() -> int:
             )
         ).all()
 
-        for batch_id, chat_id in batches:
+        for batch_id, chat_id, opened_at in batches:
             if not _acquire_lock(conn, f"batch:{batch_id}", ttl_seconds=120):
                 continue
             if not _acquire_lock(conn, f"chat:{chat_id}", ttl_seconds=120):
                 continue
 
-            conn.execute(
+            sealed = conn.execute(
                 text(
                     """
                     UPDATE inbox_inbound_batches
                     SET status='SEALED', sealed_at=now()
-                    WHERE id=:id::uuid AND status='OPEN'
+                    WHERE id=CAST(:id AS uuid) AND status='OPEN'
+                    RETURNING sealed_at
                     """
                 ),
                 {"id": str(batch_id)},
-            )
+            ).fetchone()
+            if not sealed or sealed[0] is None:
+                continue
+            sealed_at = sealed[0]
             # Load chat context
             chat_row = conn.execute(
                 text(
                     """
                     SELECT c.id, c.client_id, c.customer_phone, c.waba_number
                     FROM inbox_chats c
-                    WHERE c.id = :chat_id::uuid
+                    WHERE c.id = CAST(:chat_id AS uuid)
                     """
                 ),
                 {"chat_id": str(chat_id)},
@@ -123,22 +127,22 @@ def run_once() -> int:
                 continue
             _, client_id, customer_phone, waba_number_id = chat_row
 
-            # Build batch text: all inbound customer messages in the last 2 minutes
-            # (Phase C heuristic; later we’ll join by opened_at/sealed_at)
+            # Batch text = inbound customer lines in this batch window only (opened_at .. sealed_at).
             msg_rows = conn.execute(
                 text(
                     """
                     SELECT text
                     FROM inbox_messages
-                    WHERE chat_id = :chat_id::uuid
+                    WHERE chat_id = CAST(:chat_id AS uuid)
                       AND direction = 'in'
                       AND sender = 'customer'
-                      AND timestamp >= now() - interval '5 minutes'
+                      AND timestamp >= :opened_at
+                      AND timestamp <= :sealed_at
                     ORDER BY timestamp ASC
-                    LIMIT 25
+                    LIMIT 200
                     """
                 ),
-                {"chat_id": str(chat_id)},
+                {"chat_id": str(chat_id), "opened_at": opened_at, "sealed_at": sealed_at},
             ).all()
             batch_text = "\n".join([r[0] for r in msg_rows]).strip()
 
@@ -175,8 +179,8 @@ def run_once() -> int:
                                   kind, body_text, reply_to_batch_id, idempotency_key, status
                                 )
                                 VALUES (
-                                  :client_id::uuid, :chat_id::uuid, :to_phone, :from_id::uuid,
-                                  'AI_REPLY', :body, :batch_id::uuid, :idem, 'PENDING'
+                                  CAST(:client_id AS uuid), CAST(:chat_id AS uuid), :to_phone, CAST(:from_id AS uuid),
+                                  'AI_REPLY', :body, CAST(:batch_id AS uuid), :idem, 'PENDING'
                                 )
                                 ON CONFLICT (idempotency_key) DO NOTHING
                                 """
@@ -197,7 +201,7 @@ def run_once() -> int:
                     """
                     UPDATE inbox_inbound_batches
                     SET status='PROCESSED'
-                    WHERE id=:id::uuid
+                    WHERE id=CAST(:id AS uuid)
                     """
                 ),
                 {"id": str(batch_id)},

@@ -10,6 +10,7 @@ from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import PlainTextResponse
 from sqlalchemy import text
 from sqlalchemy.engine import Connection
+from sqlalchemy.exc import SQLAlchemyError
 
 from backend.shared.config import settings
 from backend.shared.db import engine, db_ping
@@ -65,6 +66,27 @@ def _validate_meta_signature(body: bytes, signature: str | None) -> None:
 def _allow_zy_client_id_header() -> bool:
     """Narrow dev escape hatch: never in prod."""
     return settings.app_env == "dev"
+
+
+def _coerce_jsonb_int(value: Any, default: int) -> int:
+    """ops_runtime_config.value_json can be int/str/float from JSONB; tolerate bad rows."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        s = value.strip()
+        if not s:
+            return default
+        try:
+            return int(s)
+        except ValueError:
+            return default
+    return default
 
 
 def _resolve_inbound_route(
@@ -164,107 +186,118 @@ async def meta_inbound(
     # Debounce batching:
     # - default: 3s; max: 10s (from ops_runtime_config)
     # - batch is per chat; single OPEN batch is extended until due, then worker seals it.
-    with engine.begin() as conn:
-        cfg_rows = conn.execute(
-            text(
-                """
-                SELECT key, value_json
-                FROM ops_runtime_config
-                WHERE key IN ('debounce.seconds','debounce.max_seconds')
-                """
-            )
-        ).all()
-        cfg = {r[0]: r[1] for r in cfg_rows}
-        debounce_seconds = int(cfg.get("debounce.seconds", 3))
-        max_debounce_seconds = int(cfg.get("debounce.max_seconds", 10))
-
-        for m in messages:
-            routed_client_id, routed_wa_number_id = _resolve_inbound_route(
-                conn,
-                to_phone_number_id=m.to_phone_number_id,
-                customer_phone_raw=m.from_phone,
-                x_zy_client_id=x_zy_client_id,
-            )
-            customer_phone = normalize_customer_phone_for_route(m.from_phone)
-
-            chat_id = conn.execute(
+    try:
+        with engine.begin() as conn:
+            cfg_rows = conn.execute(
                 text(
                     """
-                    INSERT INTO inbox_chats (client_id, customer_phone, waba_number, state, last_customer_msg_at)
-                    VALUES (CAST(:client_id AS uuid), :customer_phone, CAST(:waba_number AS uuid), 'AI_ACTIVE', now())
-                    ON CONFLICT (client_id, customer_phone)
-                    DO UPDATE SET last_customer_msg_at = EXCLUDED.last_customer_msg_at,
-                                  waba_number = COALESCE(inbox_chats.waba_number, EXCLUDED.waba_number)
-                    RETURNING id
+                    SELECT key, value_json
+                    FROM ops_runtime_config
+                    WHERE key IN ('debounce.seconds','debounce.max_seconds')
                     """
-                ),
-                {"client_id": routed_client_id, "customer_phone": customer_phone, "waba_number": routed_wa_number_id},
-            ).scalar_one()
+                )
+            ).all()
+            cfg = {r[0]: r[1] for r in cfg_rows}
+            debounce_seconds = _coerce_jsonb_int(cfg.get("debounce.seconds"), 3)
+            max_debounce_seconds = _coerce_jsonb_int(cfg.get("debounce.max_seconds"), 10)
 
-            conn.execute(
-                text(
-                    """
-                    INSERT INTO inbox_messages (chat_id, direction, sender, text, timestamp, meta_msg_id, meta_payload)
-                    VALUES (CAST(:chat_id AS uuid), 'in', 'customer', :text, now(), :meta_msg_id, CAST(:meta_payload AS jsonb))
-                    ON CONFLICT (meta_msg_id) DO NOTHING
-                    """
-                ),
-                {
-                    "chat_id": str(chat_id),
-                    "text": m.text,
-                    "meta_msg_id": m.meta_msg_id,
-                    "meta_payload": json.dumps(m.raw),
-                },
-            )
+            for m in messages:
+                routed_client_id, routed_wa_number_id = _resolve_inbound_route(
+                    conn,
+                    to_phone_number_id=m.to_phone_number_id,
+                    customer_phone_raw=m.from_phone,
+                    x_zy_client_id=x_zy_client_id,
+                )
+                customer_phone = normalize_customer_phone_for_route(m.from_phone)
 
-            # Create or extend an OPEN batch for this chat.
-            # Rules:
-            # - if no OPEN batch exists: opened_at=now, process_after=now+debounce, max_process_after=now+max
-            # - if OPEN exists: bump inbound_msg_count, last_inbound_msg_at, and process_after=min(now+debounce, max_process_after)
-            conn.execute(
-                text(
-                    """
-                    WITH existing AS (
-                      SELECT id, max_process_after
-                      FROM inbox_inbound_batches
-                      WHERE chat_id = CAST(:chat_id AS uuid) AND status = 'OPEN'
-                      ORDER BY opened_at DESC
-                      LIMIT 1
+                chat_id = conn.execute(
+                    text(
+                        """
+                        INSERT INTO inbox_chats (client_id, customer_phone, waba_number, state, last_customer_msg_at)
+                        VALUES (CAST(:client_id AS uuid), :customer_phone, CAST(:waba_number AS uuid), 'AI_ACTIVE', now())
+                        ON CONFLICT (client_id, customer_phone)
+                        DO UPDATE SET last_customer_msg_at = EXCLUDED.last_customer_msg_at,
+                                      waba_number = COALESCE(inbox_chats.waba_number, EXCLUDED.waba_number)
+                        RETURNING id
+                        """
                     ),
-                    ins AS (
-                      INSERT INTO inbox_inbound_batches(
-                        chat_id, status, opened_at, process_after, max_process_after, last_inbound_msg_at, inbound_msg_count
-                      )
-                      SELECT
-                        CAST(:chat_id AS uuid),
-                        'OPEN',
-                        now(),
-                        now() + (:debounce || ' seconds')::interval,
-                        now() + (:max_debounce || ' seconds')::interval,
-                        now(),
-                        1
-                      WHERE NOT EXISTS (SELECT 1 FROM existing)
-                      RETURNING id
-                    )
-                    UPDATE inbox_inbound_batches b
-                    SET
-                      last_inbound_msg_at = now(),
-                      inbound_msg_count = inbound_msg_count + 1,
-                      process_after = LEAST(
-                        now() + (:debounce || ' seconds')::interval,
-                        b.max_process_after
-                      )
-                    WHERE b.id = (SELECT id FROM existing)
-                    """
-                ),
-                {
-                    "chat_id": str(chat_id),
-                    "debounce": debounce_seconds,
-                    "max_debounce": max_debounce_seconds,
-                },
-            )
+                    {
+                        "client_id": routed_client_id,
+                        "customer_phone": customer_phone,
+                        "waba_number": routed_wa_number_id,
+                    },
+                ).scalar_one()
 
-    return {"ok": True, "stored": len(messages)}
+                conn.execute(
+                    text(
+                        """
+                        INSERT INTO inbox_messages (chat_id, direction, sender, text, timestamp, meta_msg_id, meta_payload)
+                        VALUES (CAST(:chat_id AS uuid), 'in', 'customer', :text, now(), :meta_msg_id, CAST(:meta_payload AS jsonb))
+                        ON CONFLICT (meta_msg_id) WHERE meta_msg_id IS NOT NULL DO NOTHING
+                        """
+                    ),
+                    {
+                        "chat_id": str(chat_id),
+                        "text": m.text,
+                        "meta_msg_id": m.meta_msg_id,
+                        "meta_payload": json.dumps(m.raw),
+                    },
+                )
+
+                # Create or extend an OPEN batch for this chat.
+                # Rules:
+                # - if no OPEN batch exists: opened_at=now, process_after=now+debounce, max_process_after=now+max
+                # - if OPEN exists: bump inbound_msg_count, last_inbound_msg_at, and process_after=min(now+debounce, max_process_after)
+                conn.execute(
+                    text(
+                        """
+                        WITH existing AS (
+                          SELECT id, max_process_after
+                          FROM inbox_inbound_batches
+                          WHERE chat_id = CAST(:chat_id AS uuid) AND status = 'OPEN'
+                          ORDER BY opened_at DESC
+                          LIMIT 1
+                        ),
+                        ins AS (
+                          INSERT INTO inbox_inbound_batches(
+                            chat_id, status, opened_at, process_after, max_process_after, last_inbound_msg_at, inbound_msg_count
+                          )
+                          SELECT
+                            CAST(:chat_id AS uuid),
+                            'OPEN',
+                            now(),
+                            now() + (:debounce || ' seconds')::interval,
+                            now() + (:max_debounce || ' seconds')::interval,
+                            now(),
+                            1
+                          WHERE NOT EXISTS (SELECT 1 FROM existing)
+                          RETURNING id
+                        )
+                        UPDATE inbox_inbound_batches b
+                        SET
+                          last_inbound_msg_at = now(),
+                          inbound_msg_count = inbound_msg_count + 1,
+                          process_after = LEAST(
+                            now() + (:debounce || ' seconds')::interval,
+                            b.max_process_after
+                          )
+                        WHERE b.id = (SELECT id FROM existing)
+                        """
+                    ),
+                    {
+                        "chat_id": str(chat_id),
+                        "debounce": debounce_seconds,
+                        "max_debounce": max_debounce_seconds,
+                    },
+                )
+
+        return {"ok": True, "stored": len(messages)}
+    except SQLAlchemyError as exc:
+        # Common local failure: migrations not applied (missing ops_runtime_config / batches table).
+        detail = str(getattr(exc, "orig", exc) or exc)
+        if settings.app_env == "dev":
+            raise HTTPException(status_code=500, detail=f"database error: {detail}") from exc
+        raise HTTPException(status_code=500, detail="database error") from exc
 
 
 @app.post("/webhooks/meta/status")

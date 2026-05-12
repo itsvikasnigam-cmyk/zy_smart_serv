@@ -50,8 +50,9 @@ def main() -> int:
 
     with httpx.Client(timeout=10.0) as client:
         r = client.post("http://127.0.0.1:8081/webhooks/meta/inbound", json=payload)
-        print(r.status_code, r.text)
-        r.raise_for_status()
+    print(f"HTTP {r.status_code}")
+    print(r.text)
+    r.raise_for_status()
     return 0
 
 
