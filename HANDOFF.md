@@ -34,7 +34,7 @@ Use this file at the start of **every** Cursor chat (stem or module). Update it 
 2. **M1 AI**: Replace stub with Llama + quality gate + GPT-4 judge/fallback; `NEEDS_OWNER_DATA` + fixed customer string; urgent bypass. **`ops_runtime_config` (read by `/ai/respond`):** `ai.urgent_bypass_substrings` (JSON array of substrings → urgent REPLY path) and `ai.needs_owner_data_customer_reply` (optional string override for the fixed NEEDS_OWNER_DATA customer line). When the batch processor handles `HANDOFF` action, it should set `inbox_chats.state='PENDING_AGENT'` and (ideally) `NOTIFY 'chat_events'` so `client_api` can emit `chat_state_changed` without polling.
 3. **M4 Inbox**: ~~assignment/reassignment APIs + WS events; agent reply path → outbox `AGENT_REPLY`~~ — **landed (client_api).** Follow-ups: swap `DBPoller` for Postgres `LISTEN/NOTIFY`; per-chat pagination cursors; idempotency-key header for `POST /inbox/chats/{id}/reply` (today the key is derived from generated `inbox_messages.id`, so retries from the client create a second logical message).
 4. **M5 Billing**: Razorpay + Paddle webhooks; `bill_plans` / `bill_subscriptions` tables if not fully migrated.
-5. **Flutter**: client + super-admin shells; consume APIs above (REST contract documented in `backend/apps/client_api/`, WS at `/ws?token=<JWT>`).
+5. **Flutter**: `flutter_app/` — login, owner/agent inbox shell (REST + `/ws`), super_admin control-plane placeholder; README **Flutter** + `flutter_app/README.md`.
 6. **M10 Release**: staging DB + automated smoke script + checklist. *(Minimal pytest + README/HANDOFF smoke checklist landed; extend with testcontainers or CI job as needed.)*
 
 ## How to run (minimal)
@@ -91,7 +91,7 @@ Meta env (`.env` or `$env:`): `META_ACCESS_TOKEN`, `META_APP_SECRET`, `META_VERI
 | **M1** | AI pipeline only | This file + `backend/apps/ai_engine/` |
 | **M4** | Inbox, assignments, WS | This file + future `client_api` / inbox modules |
 | **M5** | Billing | This file + migrations + webhook routes |
-| **Flutter** | UI only | API contract from stem or OpenAPI |
+| **Flutter** | UI only | This file + `flutter_app/` |
 
 **Rule:** Each module chat pastes **this file** (or `@HANDOFF.md`) first, then only the files for that module. Stem merges when acceptance criteria met.
 
@@ -218,7 +218,7 @@ Do not implement full Flutter in this chat.
 ### Chat G — Flutter (client + super-admin shells)
 
 ```text
-@HANDOFF.md Read first. Flutter project location TBD—if missing, scaffold under flutter_app/ or mobile/ at repo root.
+@HANDOFF.md Read first. Flutter app lives under flutter_app/ (package zy_smart_flutter).
 
 Task:
 1) Login + role-based navigation (owner vs super_admin).
@@ -227,7 +227,7 @@ Task:
 
 Acceptance:
 - Runs on Android + Windows desktop; document build commands.
-- Backend base URL configurable for dev (e.g. http://127.0.0.1:8081).
+- Backend base URL configurable for dev (client_api default http://127.0.0.1:8085; use dart-define CLIENT_API_BASE_URL).
 ```
 
 ### Chat H — Testing / staging gate (M10-lite)
@@ -264,6 +264,7 @@ Acceptance:
 
 ## Last updated
 
+- 2026-05-13 — **Flutter `flutter_app/`**: scaffold + client_api login/inbox/WS shell + super_admin stub; README Flutter section; Chat G block points at `flutter_app/`.
 - 2026-05-13 — **M10-lite testing**: `tests/` pytest (meta/status extract, dev inbound contract, optional gateway e2e); README **10-step staging smoke** + automated test section; `backend/tools/__init__.py` for imports; `build_meta_inbound_webhook_payload` in `dev_send_inbound.py`.
 - 2026-05-12 — multi-chat stem; added **Paste blocks for new Cursor chats** (Chats A–H).
 - 2026-05-12 — M1: documented `ops_runtime_config` keys `ai.urgent_bypass_substrings` and `ai.needs_owner_data_customer_reply` in gap list.

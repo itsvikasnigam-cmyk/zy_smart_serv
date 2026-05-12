@@ -121,3 +121,40 @@ python backend/tools/dev_seed_users.py --client-id <CLIENT_ID>
 python backend/tools/dev_inbox_smoke.py --listen-seconds 6
 ```
 
+## Flutter (`flutter_app/`)
+
+Cross-platform shell for **client_api**: `POST /auth/login`, `GET /auth/me`, owner/agent **inbox** (`GET /inbox/chats`, `GET /inbox/chats/{id}`, assign/reply/typing), **WebSocket** `ws://<host>:<port>/ws?token=<JWT>`, and a **super_admin** control-plane placeholder (static copy until a real admin API exists).
+
+**First time only** (materialize `android/` + `windows/` if missing):
+
+```powershell
+cd flutter_app
+flutter create . --project-name zy_smart_flutter --org com.zysmart.serv --platforms=android,windows
+flutter pub get
+```
+
+**API base URL** defaults to `http://127.0.0.1:8085`. Override at build/run:
+
+```text
+--dart-define=CLIENT_API_BASE_URL=http://127.0.0.1:8085
+```
+
+On the **Android emulator**, the host loopback is `10.0.2.2`, so point the client at `http://10.0.2.2:8085` (dart-define or in-app **API base URL**).
+
+**Run — Windows desktop:**
+
+```powershell
+cd flutter_app
+flutter run -d windows --dart-define=CLIENT_API_BASE_URL=http://127.0.0.1:8085
+```
+
+**Run — Android emulator** (list devices, then pick the emulator id):
+
+```powershell
+cd flutter_app
+flutter devices
+flutter run -d emulator-5554 --dart-define=CLIENT_API_BASE_URL=http://10.0.2.2:8085
+```
+
+More detail: `flutter_app/README.md`.
+

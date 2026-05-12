@@ -1,0 +1,28 @@
+# Flutter/Dart
+.dart_tool/
+.packages
+.pub-cache/
+.pub/
+build/
+**/Generated.xcconfig
+**/flutter_export_environment.sh
+**/Flutter.podspec
+**/Pods/
+
+# IDE
+.idea/
+.vscode/
+
+# Android
+**/local.properties
+**/captures/
+**/.gradle/
+
+# Windows
+**/x64/
+**/x86/
+**/ephemeral/
+
+# Misc
+*.iml
+*.log
