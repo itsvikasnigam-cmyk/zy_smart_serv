@@ -27,3 +27,6 @@ Thumbs.db
 # Cursor workspace artifacts (not application source)
 agent-transcripts/
 mcps/
+
+# Flutter: duplicate scaffold at repo root (canonical app is under mobile/)
+zy_smart_client/
