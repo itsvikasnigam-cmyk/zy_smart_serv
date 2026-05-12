@@ -1,0 +1,6 @@
+---
+pid: 57020
+cwd: |
+  C:\Users\TV_Station
+---
+(base) PS C:\Users\TV_Station>
