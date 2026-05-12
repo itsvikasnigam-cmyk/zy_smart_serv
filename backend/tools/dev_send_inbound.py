@@ -1,10 +1,50 @@
 from __future__ import annotations
 
-import json
 import sys
 import time
+from typing import Any
 
 import httpx
+
+
+def build_meta_inbound_webhook_payload(
+    *,
+    meta_phone_number_id: str,
+    from_phone: str,
+    text_body: str,
+    msg_id: str | None = None,
+    timestamp: int | None = None,
+) -> dict[str, Any]:
+    """
+    Synthetic Meta Cloud API inbound webhook body (same shape as production).
+    Used by this CLI and by tests to keep the contract in one place.
+    """
+    now = int(time.time())
+    mid = msg_id if msg_id is not None else f"wamid.DEV.{now}"
+    ts = str(timestamp if timestamp is not None else now)
+    return {
+        "object": "whatsapp_business_account",
+        "entry": [
+            {
+                "changes": [
+                    {
+                        "value": {
+                            "metadata": {"phone_number_id": meta_phone_number_id},
+                            "messages": [
+                                {
+                                    "id": mid,
+                                    "from": from_phone,
+                                    "timestamp": ts,
+                                    "type": "text",
+                                    "text": {"body": text_body},
+                                }
+                            ],
+                        }
+                    }
+                ]
+            }
+        ],
+    }
 
 
 def main() -> int:
@@ -23,30 +63,11 @@ def main() -> int:
     from_phone = args[args.index("--from") + 1]
     text_body = args[args.index("--text") + 1]
 
-    msg_id = f"wamid.DEV.{int(time.time())}"
-    payload = {
-        "object": "whatsapp_business_account",
-        "entry": [
-            {
-                "changes": [
-                    {
-                        "value": {
-                            "metadata": {"phone_number_id": pid},
-                            "messages": [
-                                {
-                                    "id": msg_id,
-                                    "from": from_phone,
-                                    "timestamp": str(int(time.time())),
-                                    "type": "text",
-                                    "text": {"body": text_body},
-                                }
-                            ],
-                        }
-                    }
-                ]
-            }
-        ],
-    }
+    payload = build_meta_inbound_webhook_payload(
+        meta_phone_number_id=pid,
+        from_phone=from_phone,
+        text_body=text_body,
+    )
 
     with httpx.Client(timeout=10.0) as client:
         r = client.post("http://127.0.0.1:8081/webhooks/meta/inbound", json=payload)

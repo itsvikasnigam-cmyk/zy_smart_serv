@@ -25,7 +25,8 @@ Use this file at the start of **every** Cursor chat (stem or module). Update it 
 - **client_api (M3/M4)** (`backend/apps/client_api/`): JWT login, owner/agent/super_admin RBAC, inbox list/detail, assign/reassign/unassign/escalate, typing presence, agent reply (mirrors `inbox_messages` + enqueues `wa_outbox` `AGENT_REPLY`), `/ws` WebSocket emitting `message_new`, `assignment_changed`, `typing`, `chat_state_changed`. Cross-process events (gateway/batch_processor → WS) are fanned out by an in-process `DBPoller` over `inbox_messages`, `wa_outbox`, and `chat_assignments`. New env: `CLIENT_API_JWT_SECRET`, `CLIENT_API_JWT_TTL_MINUTES`, `CLIENT_API_EVENT_POLL_MS`, `CLIENT_API_CORS_ORIGINS`.
 - **Alembic**: `0001_init_core`, `0002_reliability_queueing`, `0003_wa_trial_map`; `backend/alembic.ini` uses `%(here)s/migrations`. No new migration needed for client_api — schema already has `api_users`, `chat_assignments`, `chat_presence`.
 - **Dev helpers**: `backend/tools/dev_seed.py`, `dev_send_inbound.py`, `dev_check.py`, `dev_seed_users.py` (owner/agent), `dev_inbox_smoke.py` (drives the assign flow + watches WS without Flutter).
-- **README**: local smoke steps.
+- **Tests**: `tests/` — `pytest` for `meta_payload` / `status_payload` extractors, dev inbound JSON contract; optional live gateway POST when `RUN_WA_GATEWAY_E2E=1` (see `tests/test_gateway_e2e_optional.py` and README).
+- **README**: local smoke steps, **10-step non-dev / staging smoke checklist**, automated test command.
 
 ## Known gaps / next work (pick one module per chat)
 
@@ -34,7 +35,7 @@ Use this file at the start of **every** Cursor chat (stem or module). Update it 
 3. **M4 Inbox**: ~~assignment/reassignment APIs + WS events; agent reply path → outbox `AGENT_REPLY`~~ — **landed (client_api).** Follow-ups: swap `DBPoller` for Postgres `LISTEN/NOTIFY`; per-chat pagination cursors; idempotency-key header for `POST /inbox/chats/{id}/reply` (today the key is derived from generated `inbox_messages.id`, so retries from the client create a second logical message).
 4. **M5 Billing**: Razorpay + Paddle webhooks; `bill_plans` / `bill_subscriptions` tables if not fully migrated.
 5. **Flutter**: client + super-admin shells; consume APIs above (REST contract documented in `backend/apps/client_api/`, WS at `/ws?token=<JWT>`).
-6. **M10 Release**: staging DB + automated smoke script + checklist.
+6. **M10 Release**: staging DB + automated smoke script + checklist. *(Minimal pytest + README/HANDOFF smoke checklist landed; extend with testcontainers or CI job as needed.)*
 
 ## How to run (minimal)
 
@@ -242,6 +243,16 @@ Acceptance:
 - One command runs the automated tests locally (document which).
 ```
 
+**Status:** `python -m pytest tests/` from repo root (see README **Automated tests**). Optional live gateway: `RUN_WA_GATEWAY_E2E=1` + `ZY_E2E_META_PHONE_NUMBER_ID`. Full **10-step staging smoke** checklist: README section *Non-dev / staging smoke checklist (10 steps)*.
+
+## Testing (quick reference)
+
+| What | Command / location |
+|------|---------------------|
+| Unit + contract tests | From repo root: `python -m pytest tests/` |
+| Optional HTTP → gateway | `RUN_WA_GATEWAY_E2E=1`, `ZY_E2E_META_PHONE_NUMBER_ID`, `tests/test_gateway_e2e_optional.py` (see README) |
+| Non-dev smoke (10 steps) | README → *Non-dev / staging smoke checklist* |
+
 ## Meta / WhatsApp (current decision)
 
 - **Dev:** Meta-provided **+1 test number** + `phone_number_id` + tokens — OK; do **not** use personal WhatsApp as the WABA number.
@@ -253,6 +264,7 @@ Acceptance:
 
 ## Last updated
 
+- 2026-05-13 — **M10-lite testing**: `tests/` pytest (meta/status extract, dev inbound contract, optional gateway e2e); README **10-step staging smoke** + automated test section; `backend/tools/__init__.py` for imports; `build_meta_inbound_webhook_payload` in `dev_send_inbound.py`.
 - 2026-05-12 — multi-chat stem; added **Paste blocks for new Cursor chats** (Chats A–H).
 - 2026-05-12 — M1: documented `ops_runtime_config` keys `ai.urgent_bypass_substrings` and `ai.needs_owner_data_customer_reply` in gap list.
 - 2026-05-12 — **M3/M4 client_api landed**: JWT login, RBAC, inbox list/detail, assign/reassign/unassign/escalate, typing, agent reply (mirrors `inbox_messages` + outbox `AGENT_REPLY`), `/ws` with `message_new` / `assignment_changed` / `typing` / `chat_state_changed`. Cross-process events via in-process `DBPoller` over `inbox_messages` / `wa_outbox` / `chat_assignments`. New env keys; new dev tools `dev_seed_users.py` + `dev_inbox_smoke.py`.
