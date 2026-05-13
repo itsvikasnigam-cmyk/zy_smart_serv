@@ -2,6 +2,35 @@
 
 Flutter client shell for **client_api** (login, owner/agent inbox + WebSocket, super_admin control-plane placeholder).
 
+## Fix: `No Windows desktop project configured`
+
+This repo tracks Dart sources only until you materialize platform folders locally. From **`flutter_app`** (this directory), run **once**:
+
+```powershell
+flutter create . --project-name zy_smart_flutter --org com.zysmart.serv --platforms=windows
+```
+
+For Android as well (or both):
+
+```powershell
+flutter create . --project-name zy_smart_flutter --org com.zysmart.serv --platforms=android,windows
+```
+
+Then `flutter pub get` and `flutter run -d windows` again.
+
+## Git paths (common mistake)
+
+Git metadata lives in the **repo root** (`empty-window`), not inside `flutter_app/`.
+
+| Your shell cwd | Stage `home_shell.dart` |
+|----------------|-------------------------|
+| `...\empty-window` (root) | `git add flutter_app/lib/screens/home_shell.dart` |
+| `...\empty-window\flutter_app` | `git add lib/screens/home_shell.dart` |
+
+Using `git add flutter_app/lib/...` **while cwd is `flutter_app`** doubles the path and fails.
+
+**`pubspec.lock`:** after `flutter pub get`, consider committing it from the repo root: `git add flutter_app/pubspec.lock`.
+
 ## First-time setup (native platforms)
 
 If `android/` or `windows/` is missing, generate them once from this directory:

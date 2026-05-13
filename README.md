@@ -39,7 +39,218 @@ python -m pytest tests/test_gateway_e2e_optional.py -v
 
 Docker-based Postgres (`testcontainers`) is not wired in this repo yet; use the optional env vars above or the manual checklist below.
 
+## Copy-paste command reference (PowerShell, repo root)
+
+Use **`C:\Users\TV_Station\.cursor\projects\empty-window`** (or your clone path) as the repo root. **Every** command below assumes you already ran:
+
+```powershell
+cd C:\Users\TV_Station\.cursor\projects\empty-window
+.\.venv\Scripts\Activate.ps1
+```
+
+### A) One-time (or when deps change)
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r backend\requirements.txt
+Copy-Item backend\.env.example .env
+Copy-Item backend\.env.example backend\.env
+notepad .env
+```
+
+Edit **`.env` at repo root** (apps load `env_file=".env"` relative to **current directory** = repo root when you use the commands below). Put at least `DATABASE_URL`, `META_VERIFY_TOKEN`, and any keys you need. Keep **`backend\.env.example`** in Git; **`backend\.env`** is optional if you maintain **root `.env`** only.
+
+### B) Every new terminal session (before Python imports `backend.*`)
+
+```powershell
+cd C:\Users\TV_Station\.cursor\projects\empty-window
+.\.venv\Scripts\Activate.ps1
+$env:PYTHONPATH = "$PWD"
+```
+
+Load DB from root `.env` **or** set explicitly:
+
+```powershell
+$env:DATABASE_URL = "postgresql+psycopg://postgres:postgres@localhost:5432/zysmart"
+```
+
+### C) Migrations (needs Postgres + `DATABASE_URL`)
+
+```powershell
+cd C:\Users\TV_Station\.cursor\projects\empty-window
+.\.venv\Scripts\Activate.ps1
+$env:PYTHONPATH = "$PWD"
+$env:DATABASE_URL = "postgresql+psycopg://postgres:postgres@localhost:5432/zysmart"
+python -m alembic -c backend\alembic.ini upgrade head
+python -m alembic -c backend\alembic.ini current
+```
+
+### D) Automated tests (no DB for default suite)
+
+```powershell
+cd C:\Users\TV_Station\.cursor\projects\empty-window
+.\.venv\Scripts\Activate.ps1
+$env:PYTHONPATH = "$PWD"
+python -m pytest tests\
+```
+
+### E) Optional live gateway pytest (needs gateway running on 8081)
+
+**Terminal 1 — leave running:**
+
+```powershell
+cd C:\Users\TV_Station\.cursor\projects\empty-window
+.\.venv\Scripts\Activate.ps1
+$env:PYTHONPATH = "$PWD"
+$env:DATABASE_URL = "postgresql+psycopg://postgres:postgres@localhost:5432/zysmart"
+python -m uvicorn backend.apps.wa_gateway.main:app --reload --port 8081
+```
+
+**Terminal 2:**
+
+```powershell
+cd C:\Users\TV_Station\.cursor\projects\empty-window
+.\.venv\Scripts\Activate.ps1
+$env:PYTHONPATH = "$PWD"
+$env:RUN_WA_GATEWAY_E2E = "1"
+$env:ZY_E2E_META_PHONE_NUMBER_ID = "PASTE_NUMERIC_META_PHONE_NUMBER_ID_FROM_DEV_SEED"
+python -m pytest tests\test_gateway_e2e_optional.py -v
+```
+
+### F) HTTP health checks (no secrets in URL)
+
+```powershell
+Invoke-WebRequest http://127.0.0.1:8081/health -UseBasicParsing
+Invoke-WebRequest http://127.0.0.1:8081/ready  -UseBasicParsing
+Invoke-WebRequest http://127.0.0.1:8083/health -UseBasicParsing
+Invoke-WebRequest http://127.0.0.1:8085/health -UseBasicParsing
+Invoke-WebRequest http://127.0.0.1:8085/ready  -UseBasicParsing
+Invoke-WebRequest http://127.0.0.1:8086/health -UseBasicParsing
+Invoke-WebRequest http://127.0.0.1:8086/ready  -UseBasicParsing
+```
+
+### G) Seed + synthetic inbound + DB peek (gateway on 8081)
+
+Replace `PASTE_META_PHONE_NUMBER_ID` with your real Cloud API **phone_number_id** (digits only string from Meta).
+
+```powershell
+cd C:\Users\TV_Station\.cursor\projects\empty-window
+.\.venv\Scripts\Activate.ps1
+$env:PYTHONPATH = "$PWD"
+$env:DATABASE_URL = "postgresql+psycopg://postgres:postgres@localhost:5432/zysmart"
+python backend\tools\dev_seed.py --meta-phone-number-id "PASTE_META_PHONE_NUMBER_ID"
+python backend\tools\dev_send_inbound.py --meta-phone-number-id "PASTE_META_PHONE_NUMBER_ID" --from +919999999999 --text "smoke"
+python backend\tools\dev_check.py
+```
+
+### H) Meta webhook verify (optional — only if token matches root `.env`)
+
+Replace `YOUR_META_VERIFY_TOKEN` with the **exact** value of `META_VERIFY_TOKEN` from **repo root** `.env`. Use **single quotes** around the whole URL.
+
+```powershell
+Invoke-WebRequest 'http://127.0.0.1:8081/webhooks/meta?hub.mode=subscribe&hub.verify_token=YOUR_META_VERIFY_TOKEN&hub.challenge=test' -UseBasicParsing
+```
+
+Expect status **200** and body **`test`**. Skip this if you are not registering the callback in Meta yet.
+
+### I) Full stack dev processes (one terminal each; all need `PYTHONPATH` + `DATABASE_URL`)
+
+**Gateway 8081**
+
+```powershell
+cd C:\Users\TV_Station\.cursor\projects\empty-window
+.\.venv\Scripts\Activate.ps1
+$env:PYTHONPATH = "$PWD"
+$env:DATABASE_URL = "postgresql+psycopg://postgres:postgres@localhost:5432/zysmart"
+python -m uvicorn backend.apps.wa_gateway.main:app --reload --port 8081
+```
+
+**AI 8083**
+
+```powershell
+cd C:\Users\TV_Station\.cursor\projects\empty-window
+.\.venv\Scripts\Activate.ps1
+$env:PYTHONPATH = "$PWD"
+$env:DATABASE_URL = "postgresql+psycopg://postgres:postgres@localhost:5432/zysmart"
+python -m uvicorn backend.apps.ai_engine.main:app --reload --port 8083
+```
+
+**Batch worker**
+
+```powershell
+cd C:\Users\TV_Station\.cursor\projects\empty-window
+.\.venv\Scripts\Activate.ps1
+$env:PYTHONPATH = "$PWD"
+$env:DATABASE_URL = "postgresql+psycopg://postgres:postgres@localhost:5432/zysmart"
+$env:AI_ENGINE_URL = "http://127.0.0.1:8083"
+python backend\workers\batch_processor.py
+```
+
+**Outbox sender** (optional until you send outbound; needs `META_ACCESS_TOKEN` for real Meta sends)
+
+```powershell
+cd C:\Users\TV_Station\.cursor\projects\empty-window
+.\.venv\Scripts\Activate.ps1
+$env:PYTHONPATH = "$PWD"
+$env:DATABASE_URL = "postgresql+psycopg://postgres:postgres@localhost:5432/zysmart"
+python backend\workers\outbox_sender.py
+```
+
+**client_api 8085**
+
+```powershell
+cd C:\Users\TV_Station\.cursor\projects\empty-window
+.\.venv\Scripts\Activate.ps1
+$env:PYTHONPATH = "$PWD"
+$env:DATABASE_URL = "postgresql+psycopg://postgres:postgres@localhost:5432/zysmart"
+$env:CLIENT_API_JWT_SECRET = "$(python -c \"import secrets; print(secrets.token_urlsafe(48))\")"
+python -m uvicorn backend.apps.client_api.main:app --reload --port 8085
+```
+
+**billing_api 8086** (set secrets to match README billing examples when testing webhooks)
+
+```powershell
+cd C:\Users\TV_Station\.cursor\projects\empty-window
+.\.venv\Scripts\Activate.ps1
+$env:PYTHONPATH = "$PWD"
+$env:DATABASE_URL = "postgresql+psycopg://postgres:postgres@localhost:5432/zysmart"
+$env:BILLING_RAZORPAY_WEBHOOK_SECRET = "devsecret_replace_me"
+$env:BILLING_PADDLE_WEBHOOK_SECRET     = "devpaddle_replace_me"
+python -m uvicorn backend.apps.billing_api.main:app --reload --port 8086
+```
+
+### J) client_api smoke scripts (after G) — replace `PASTE_CLIENT_UUID`
+
+Use the `client_id` UUID printed by `dev_seed.py` (or read from DB).
+
+```powershell
+cd C:\Users\TV_Station\.cursor\projects\empty-window
+.\.venv\Scripts\Activate.ps1
+$env:PYTHONPATH = "$PWD"
+$env:DATABASE_URL = "postgresql+psycopg://postgres:postgres@localhost:5432/zysmart"
+python backend\tools\dev_seed_users.py --client-id "PASTE_CLIENT_UUID"
+python backend\tools\dev_inbox_smoke.py --listen-seconds 6
+```
+
+### K) Map README “10-step smoke” to these blocks
+
+| Step | Use block |
+|------|-----------|
+| 1 Infrastructure | Postgres up; set `$env:DATABASE_URL` or root `.env` |
+| 2 Migrations | **C)** |
+| 3 Gateway `/health` | **F)** first line |
+| 4 Gateway `/ready` | **F)** second line |
+| 5 Config | Edit root `.env` (`APP_ENV`, `META_*`, billing secrets) |
+| 6 Meta verify GET | **H)** optional |
+| 7 Inbound | **G)** (`dev_send_inbound`) |
+| 8 Persistence | **G)** last line (`dev_check`) |
+| 9 Workers | **I)** AI + batch (+ outbox if needed) |
+| 10 client_api | **I)** client_api + **J)** |
+
 ## Non-dev / staging smoke checklist (10 steps)
+
+For **ready-to-run PowerShell** (env vars + `PYTHONPATH` + block letters **A–K**), see **Copy-paste command reference** above; section **K)** maps these ten steps to those blocks.
 
 Use this after a deploy or before a demo when you want a repeatable pass/fail sequence (not only developer laptops).
 
