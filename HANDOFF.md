@@ -20,23 +20,23 @@ Use this file at the start of **every** Cursor chat (stem or module). Update it 
 ## What is already implemented (this repo)
 
 - FastAPI **WA Gateway** (`backend/apps/wa_gateway/`): Meta verify, inbound store-first + dedupe `meta_msg_id`, routing by `phone_number_id` → `wa_numbers`, debounce batch rows, status webhook → `wa_status_events` / `wa_outbox` update.
-- **AI Engine stub** (`backend/apps/ai_engine/`): `POST /ai/respond`.
+- **AI Engine** (`backend/apps/ai_engine/`): `POST /ai/respond` — deterministic routing (`REPLY` / `HANDOFF` / `NEEDS_OWNER_DATA`) + `ops_runtime_config` keys (`ai.urgent_bypass_substrings`, `ai.needs_owner_data_customer_reply`); external LLM layer still optional / future.
 - **Billing (M5)** (`backend/apps/billing_api/`): Alembic `0004_billing` (`bill_plans`, `bill_subscriptions`, `bill_events` with unique `(provider, provider_event_id)`); signed webhooks `POST /webhooks/razorpay` and `POST /webhooks/paddle` (default local **port 8086**); updates `api_clients.billing_provider`, `entitlement_plan`, `billing_plan_code` + upserts `bill_subscriptions`. Linking: Razorpay `payload.payload.subscription.entity.notes.client_id` (UUID string); Paddle `data.custom_data.client_id`. Optional `bill_plans` rows map provider price/plan ids → `plan_code` / `entitlement_plan` via notes `entitlement_plan` / `entitlement`.
-- **Workers**: `batch_processor.py` (seal batch → call AI → enqueue `wa_outbox`), `outbox_sender.py` (Meta send when `META_ACCESS_TOKEN` set).
-- **client_api (M3/M4)** (`backend/apps/client_api/`): JWT login, owner/agent/super_admin RBAC, inbox list/detail, assign/reassign/unassign/escalate, typing presence, agent reply (mirrors `inbox_messages` + enqueues `wa_outbox` `AGENT_REPLY`), `/ws` WebSocket emitting `message_new`, `assignment_changed`, `typing`, `chat_state_changed`. Cross-process events (gateway/batch_processor → WS) are fanned out by an in-process `DBPoller` over `inbox_messages`, `wa_outbox`, and `chat_assignments`. New env: `CLIENT_API_JWT_SECRET`, `CLIENT_API_JWT_TTL_MINUTES`, `CLIENT_API_EVENT_POLL_MS`, `CLIENT_API_CORS_ORIGINS`.
+- **Workers**: `batch_processor.py` (seal batch → call AI → enqueue `wa_outbox` `AI_REPLY` on `REPLY`; on **`HANDOFF`** / **`NEEDS_OWNER_DATA`** sets `inbox_chats.state='PENDING_AGENT'` + `handoff_reason` + `pg_notify('zy_chat_events', json)` for subscribers). `outbox_sender.py` (Meta send when `META_ACCESS_TOKEN` set).
+- **client_api (M3/M4)** (`backend/apps/client_api/`): JWT login, owner/agent/super_admin RBAC, inbox list/detail, assign/reassign/unassign/escalate, typing presence, agent reply (mirrors `inbox_messages` + enqueues `wa_outbox` `AGENT_REPLY`), optional **`Idempotency-Key`** header on **`POST /inbox/chats/{id}/reply`** for safe client retries (`agent:{chat_id}:{user_id}:{key}`). `/ws` WebSocket + in-process **`DBPoller`** over `inbox_messages`, `wa_outbox`, `chat_assignments`. Dev tool: **`python backend/tools/dev_listen_chat_events.py`** listens on **`zy_chat_events`** NOTIFY payloads. Env: `CLIENT_API_JWT_SECRET`, `CLIENT_API_JWT_TTL_MINUTES`, `CLIENT_API_EVENT_POLL_MS`, `CLIENT_API_CORS_ORIGINS`.
 - **Alembic**: `0001_init_core`, `0002_reliability_queueing`, `0003_wa_trial_map`, `0004_billing`; `backend/alembic.ini` uses `%(here)s/migrations`. No migration needed for client_api — schema already has `api_users`, `chat_assignments`, `chat_presence`.
 - **Dev helpers**: `backend/tools/dev_seed.py`, `dev_send_inbound.py`, `dev_check.py`, `dev_seed_users.py` (owner/agent), `dev_inbox_smoke.py` (drives the assign flow + watches WS without Flutter).
-- **Tests**: `tests/` — `pytest` for `meta_payload` / `status_payload` extractors, dev inbound JSON contract; optional live gateway POST when `RUN_WA_GATEWAY_E2E=1` (see `tests/test_gateway_e2e_optional.py` and README).
-- **README**: local smoke steps, **10-step non-dev / staging smoke checklist**, automated test command.
+- **Tests + CI**: `tests/` — `pytest` (payloads, billing signatures, AI contract, optional live gateway when `RUN_WA_GATEWAY_E2E=1`). GitHub Actions **`.github/workflows/ci.yml`** runs **`python -m pytest tests/`** on push/PR to **`main`** / **`master`**.
+- **README**: **Copy-paste PowerShell command reference** (blocks A–K), **10-step staging smoke**, **Sequential follow-through** (WhatsApp delivery, quality notes, Flutter, CI), local dev paths.
 
 ## Known gaps / next work (pick one module per chat)
 
-1. **M2 Gateway**: `wa_trial_map`; tighten SQL casts in gateway (`::uuid` vs SQLAlchemy binds); optional `X-ZY-Client-Id` removal once trial map exists.
-2. **M1 AI**: Replace stub with Llama + quality gate + GPT-4 judge/fallback; `NEEDS_OWNER_DATA` + fixed customer string; urgent bypass. **`ops_runtime_config` (read by `/ai/respond`):** `ai.urgent_bypass_substrings` (JSON array of substrings → urgent REPLY path) and `ai.needs_owner_data_customer_reply` (optional string override for the fixed NEEDS_OWNER_DATA customer line). When the batch processor handles `HANDOFF` action, it should set `inbox_chats.state='PENDING_AGENT'` and (ideally) `NOTIFY 'chat_events'` so `client_api` can emit `chat_state_changed` without polling.
-3. **M4 Inbox**: ~~assignment/reassignment APIs + WS events; agent reply path → outbox `AGENT_REPLY`~~ — **landed (client_api).** Follow-ups: swap `DBPoller` for Postgres `LISTEN/NOTIFY`; per-chat pagination cursors; idempotency-key header for `POST /inbox/chats/{id}/reply` (today the key is derived from generated `inbox_messages.id`, so retries from the client create a second logical message).
-4. **M5 Billing**: ~~core tables + webhooks~~ **landed** (`0004_billing`, `billing_api`). Follow-ups: checkout/session creation APIs; populate `bill_plans` for your Razorpay `plan_id` / Paddle price ids; Paddle `transaction.*` handling; Razorpay non-subscription payment events if needed.
-5. **Flutter**: `flutter_app/` — login, owner/agent inbox shell (REST + `/ws`), super_admin control-plane placeholder; README **Flutter** + `flutter_app/README.md`.
-6. **M10 Release**: staging DB + automated smoke script + checklist. *(Minimal pytest + README/HANDOFF smoke checklist landed; extend with testcontainers or CI job as needed.)*
+1. **M2 Gateway**: ~~trial map + routing~~ **landed** (`0003_wa_trial_map`, dev-only `X-ZY-Client-Id`). Follow-ups: production hardening, seed scripts for trial rows at scale.
+2. **M1 AI**: External **Llama / GPT** pipeline + quality gate; keep `/ai/respond` JSON contract stable for `batch_processor`. **`ops_runtime_config`** keys already read for urgent bypass + NEEDS_OWNER_DATA copy.
+3. **M4 Inbox / client_api**: ~~REST + WS + agent reply~~ **landed**. Follow-ups: **in-process `LISTEN zy_chat_events`** (or bridge) to **reduce / replace `DBPoller`** latency; per-chat pagination cursors; WS auth hardening for prod.
+4. **M5 Billing**: **landed** (`0004_billing`, `billing_api`). Follow-ups: checkout/session APIs; more webhook event types; operational dashboards.
+5. **Flutter**: `flutter_app/` + **`mobile/`** shells — device hardening, error UX, deep links; confirm **Android emulator** base URL `http://10.0.2.2:8085`.
+6. **M10 Release**: **Basic CI** (pytest only) in `.github/workflows/ci.yml`. Follow-ups: Postgres **service** job + optional `RUN_WA_GATEWAY_E2E`, staging DB, deploy checklist automation.
 
 ## How to run (minimal)
 
@@ -112,7 +112,7 @@ python backend\tools\dev_inbox_smoke.py --listen-seconds 6
 | **Stem** | Ordering, integration, release gates, conflicts | This file + git status |
 | **M2** | Webhooks, routing, outbox, Meta | This file + `backend/apps/wa_gateway/` |
 | **M1** | AI pipeline only | This file + `backend/apps/ai_engine/` |
-| **M4** | Inbox, assignments, WS | This file + future `client_api` / inbox modules |
+| **M4** | Inbox, assignments, WS | This file + `backend/apps/client_api/` |
 | **M5** | Billing | This file + `backend/migrations/versions/` + `backend/apps/billing_api/` |
 | **Flutter** | UI only | This file + `flutter_app/` |
 
@@ -285,8 +285,21 @@ Acceptance:
 
 - Never commit `.env` or paste long-lived tokens in chat. Rotate if exposed.
 
+## Next chat — paste this (after `@HANDOFF.md` first line)
+
+```text
+Repo state (2026-05-12): Local smoke steps 7–10 verified (gateway + AI + batch_processor + client_api + dev_inbox_smoke). WhatsApp **AI_REPLY** path confirmed when AI on 8083 + `AI_ENGINE_URL` set on batch_processor.
+
+Recently landed in tree (commit if not yet on remote): `batch_processor` **HANDOFF / NEEDS_OWNER_DATA** → `inbox_chats` **PENDING_AGENT** + **`pg_notify('zy_chat_events', json)`**; **`POST /inbox/chats/{id}/reply`** optional **`Idempotency-Key`** header; **`backend/tools/dev_listen_chat_events.py`**; **README** “Sequential follow-through” + copy-paste blocks; **`.github/workflows/ci.yml`** (pytest).
+
+Your mission: <one sentence — e.g. “Replace DBPoller with LISTEN bridge” OR “Meta outbox_sender E2E in staging” OR “Flutter polish on Android”>.
+
+Constraints: Windows + Postgres + FastAPI; repo root `C:\Users\TV_Station\.cursor\projects\empty-window`; `$env:PYTHONPATH="$PWD"` for all Python; do not commit `.env`.
+```
+
 ## Last updated
 
+- 2026-05-12 — **Stem wrap-up**: `batch_processor` HANDOFF/NEEDS_OWNER_DATA + **`pg_notify('zy_chat_events')`**; client_api **`Idempotency-Key`** on agent reply; **`dev_listen_chat_events.py`**; README **Sequential follow-through** + CI note; **`.github/workflows/ci.yml`**; HANDOFF gaps refreshed; **Next chat** paste block above.
 - 2026-05-13 — **M5 billing**: Alembic `0004_billing` (`bill_plans`, `bill_subscriptions`, `bill_events`); FastAPI `billing_api` on port **8086** with signed `POST /webhooks/razorpay` and `POST /webhooks/paddle`; `BILLING_*` env keys in `backend/.env.example`; README billing curl/PowerShell; HANDOFF **Billing (M5 layout)** subsection.
 - 2026-05-13 — **Flutter `flutter_app/`**: scaffold + client_api login/inbox/WS shell + super_admin stub; README Flutter section; Chat G block points at `flutter_app/`.
 - 2026-05-13 — **M10-lite testing**: `tests/` pytest (meta/status extract, dev inbound contract, optional gateway e2e); README **10-step staging smoke** + automated test section; `backend/tools/__init__.py` for imports; `build_meta_inbound_webhook_payload` in `dev_send_inbound.py`.

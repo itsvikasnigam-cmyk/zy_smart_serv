@@ -16,8 +16,11 @@ Topology:
     * ``chat_assignments`` for new rows → ``assignment_changed``
   Watermarks are kept in-memory; on startup we anchor to ``now()`` so we don't
   fan out historical state. Note: cross-process ``chat_state_changed`` is not
-  detected here yet; in-process endpoints publish it directly. Wire LISTEN/NOTIFY
-  later when other modules need to emit (M1 handoff, etc.).
+  detected here yet; in-process endpoints publish it directly. ``batch_processor``
+  emits ``pg_notify('zy_chat_events', …)`` on HANDOFF / NEEDS_OWNER_DATA; use
+  ``python backend/tools/dev_listen_chat_events.py`` to watch payloads locally.
+  The in-process ``DBPoller`` remains the default fan-out for ``inbox_messages`` /
+  ``wa_outbox`` / ``chat_assignments`` until a LISTEN bridge replaces polling.
 """
 
 import asyncio

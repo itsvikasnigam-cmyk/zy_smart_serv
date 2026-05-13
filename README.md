@@ -414,3 +414,47 @@ flutter run -d emulator-5554 --dart-define=CLIENT_API_BASE_URL=http://10.0.2.2:8
 
 More detail: `flutter_app/README.md`.
 
+---
+
+## Sequential follow-through (stem checklist)
+
+Do these in order when hardening the stack after local smoke.
+
+### 1) WhatsApp delivery (`outbox_sender`)
+
+Prereqs: `META_ACCESS_TOKEN`, `META_GRAPH_VERSION`, `DATABASE_URL`, migrations applied, `wa_numbers.meta_phone_number_id` set for the sending line.
+
+1. Start **WA gateway 8081**, **AI 8083**, **`batch_processor`** (`AI_ENGINE_URL`), then **`outbox_sender`** from repo root with `$env:PYTHONPATH="$PWD"`.
+2. Create a **`PENDING`** row: synthetic inbound + worker, or **`POST /inbox/chats/{id}/reply`** (agent) so `wa_outbox` has **`AI_REPLY`** or **`AGENT_REPLY`** in **`PENDING`**.
+3. Watch **`outbox_sender`** logs: success → row becomes **`SENT`** with **`meta_message_id`**; repeated fatal Meta errors → **`DEAD`** / **`FAILED`** with **`last_error_*`**.
+4. Confirm delivery in **Meta** dashboard or the recipient device.
+5. SQL spot-check:
+
+```sql
+SELECT id, kind, status, meta_message_id, last_error_code, attempt_count
+FROM wa_outbox
+ORDER BY created_at DESC
+LIMIT 10;
+```
+
+Status webhooks from Meta update **`wa_status_events`** and **`wa_outbox`** via **`POST /webhooks/meta/status`** on the gateway.
+
+### 2) Quality / reliability (partially implemented in repo)
+
+| Item | Status |
+|------|--------|
+| **`HANDOFF` / `NEEDS_OWNER_DATA` in `batch_processor`** | Updates **`inbox_chats`** to **`PENDING_AGENT`**, sets **`handoff_reason`**, **`pg_notify('zy_chat_events', json)`** for cross-process subscribers. |
+| **LISTEN instead of poller** | **`client_api`** still uses **`DBPoller`** for **`inbox_messages` / `wa_outbox` / `chat_assignments`**. Watch NOTIFY with **`python backend/tools/dev_listen_chat_events.py`**. Replacing the poller with an in-process LISTEN bridge is a larger follow-up. |
+| **Agent reply idempotency** | Optional HTTP header **`Idempotency-Key`**: 1–128 chars `[A-Za-z0-9_-]`. Same key + same user replays return the stored message + outbox id without duplicating sends. |
+
+### 3) Flutter (`flutter_app/` and `mobile/`)
+
+- **`flutter_app/`**: see **Flutter** section above (Windows + Android emulator **`10.0.2.2:8085`**).
+- **`mobile/`**: same API base URL rules; run **`flutter pub get`** then **`flutter run -d windows`** or **`flutter run -d <emulator>`** from the **`mobile/`** directory (see `mobile/README.md` if present).
+
+### 4) Release / CI
+
+GitHub Actions workflow **`.github/workflows/ci.yml`** runs **`python -m pytest tests/`** on push/PR to **`main`** / **`master`**.
+
+Optional later job: Postgres service container + **`RUN_WA_GATEWAY_E2E=1`** + uvicorn gateway (not wired by default).
+

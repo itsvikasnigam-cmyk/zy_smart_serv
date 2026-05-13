@@ -15,10 +15,11 @@ Invariants:
 """
 
 import json
+import re
 import uuid
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from sqlalchemy import text
 from sqlalchemy.engine import Connection
 from sqlalchemy.exc import IntegrityError
@@ -61,6 +62,24 @@ def _is_uuid(s: str) -> bool:
         return True
     except Exception:
         return False
+
+
+_IDEM_CLIENT_KEY_RE = re.compile(r"^[a-zA-Z0-9_-]{1,128}$")
+
+
+def _parse_client_idempotency_key(raw: str | None) -> str | None:
+    """Optional client key for safe POST /reply retries (``Idempotency-Key`` header)."""
+    if raw is None:
+        return None
+    s = raw.strip()
+    if not s:
+        return None
+    if not _IDEM_CLIENT_KEY_RE.fullmatch(s):
+        raise HTTPException(
+            status_code=400,
+            detail="Idempotency-Key must be 1-128 characters: letters, digits, underscore, hyphen",
+        )
+    return s
 
 
 def _load_chat(conn: Connection, chat_id: str, client_id: str) -> dict[str, Any] | None:
@@ -716,13 +735,20 @@ def reply(
     body: ReplyRequest,
     user: Annotated[CurrentUser, Depends(get_current_user)],
     client_id: Annotated[str | None, Query(description="Required for super_admin")] = None,
+    idempotency_key_header: Annotated[str | None, Header(default=None, alias="Idempotency-Key")] = None,
 ) -> ReplyResponse:
     """Send an agent reply.
 
     Mirrors the message into ``inbox_messages`` (direction='out', sender='agent')
     AND enqueues a ``wa_outbox`` row with kind='AGENT_REPLY' for the outbox sender
-    to deliver to Meta. The idempotency_key is derived from (chat_id, user_id,
-    msg_id) so a retried client POST won't duplicate.
+    to deliver to Meta.
+
+    Idempotency:
+
+    - Default: ``idempotency_key = agent:{chat_id}:{new_message_id}`` (retries that create a
+      second message still get a new id — use the header for strict dedupe).
+    - Optional header ``Idempotency-Key``: 1-128 chars ``[A-Za-z0-9_-]``. Same key + same user
+      returns the existing message + outbox row without duplicating sends.
     """
     assert_role_in(user, (ROLE_OWNER, ROLE_AGENT, ROLE_SUPER_ADMIN))
     scope = resolve_client_scope(user, explicit_client_id=client_id)
@@ -731,6 +757,7 @@ def reply(
     text_body = body.text.strip()
     if not text_body:
         raise HTTPException(status_code=400, detail="text is required")
+    client_key = _parse_client_idempotency_key(idempotency_key_header)
 
     with engine.begin() as conn:
         chat = _load_chat(conn, chat_id, scope)
@@ -749,6 +776,101 @@ def reply(
                 detail="chat has no associated wa_number (cannot enqueue outbox row)",
             )
 
+        if client_key:
+            idem = f"agent:{chat_id}:{user.id}:{client_key}"
+            replay = conn.execute(
+                text(
+                    """
+                    SELECT m.id::text, m.text, m.timestamp, o.id::text
+                    FROM inbox_messages m
+                    LEFT JOIN wa_outbox o ON o.idempotency_key = :idem
+                    WHERE m.chat_id = CAST(:cid AS uuid)
+                      AND m.sender = 'agent'
+                      AND m.direction = 'out'
+                      AND m.meta_payload->>'client_idempotency_key' = :ck
+                    ORDER BY m.timestamp DESC
+                    LIMIT 1
+                    """
+                ),
+                {"idem": idem, "cid": chat_id, "ck": client_key},
+            ).fetchone()
+            if replay and replay[0]:
+                msg_id, stored_text, msg_ts, outbox_id_opt = replay[0], replay[1], replay[2], replay[3]
+                if outbox_id_opt:
+                    msg_out = MessageOut(
+                        id=msg_id,
+                        chat_id=chat_id,
+                        direction="out",
+                        sender="agent",
+                        text=stored_text,
+                        timestamp=msg_ts,
+                        meta_msg_id=None,
+                        source="inbox_messages",
+                    )
+                    return ReplyResponse(
+                        message=msg_out,
+                        outbox_id=str(outbox_id_opt),
+                        idempotency_key=idem,
+                    )
+                outbox_id = conn.execute(
+                    text(
+                        """
+                        INSERT INTO wa_outbox(
+                          client_id, chat_id, to_phone_e164, from_wa_number_id,
+                          kind, body_text, idempotency_key, status
+                        )
+                        VALUES (
+                          CAST(:client AS uuid), CAST(:cid AS uuid), :to_phone, CAST(:from_id AS uuid),
+                          'AGENT_REPLY', :body, :idem, 'PENDING'
+                        )
+                        ON CONFLICT (idempotency_key) DO UPDATE
+                          SET body_text = EXCLUDED.body_text
+                        RETURNING id::text
+                        """
+                    ),
+                    {
+                        "client": scope,
+                        "cid": chat_id,
+                        "to_phone": chat["customer_phone"],
+                        "from_id": chat["waba_number"],
+                        "body": text_body,
+                        "idem": idem,
+                    },
+                ).scalar_one()
+                conn.execute(
+                    text(
+                        """
+                        UPDATE inbox_chats
+                        SET last_outbound_at = now(),
+                            state = 'AGENT_ACTIVE'
+                        WHERE id = CAST(:cid AS uuid)
+                        """
+                    ),
+                    {"cid": chat_id},
+                )
+                msg_out = MessageOut(
+                    id=msg_id,
+                    chat_id=chat_id,
+                    direction="out",
+                    sender="agent",
+                    text=text_body,
+                    timestamp=msg_ts,
+                    meta_msg_id=None,
+                    source="inbox_messages",
+                )
+                hub.publish(
+                    scope,
+                    EVENT_MESSAGE_NEW,
+                    {"chat_id": chat_id, "message": msg_out.model_dump(mode="json")},
+                )
+                if chat["state"] != "AGENT_ACTIVE":
+                    _publish_state_change(scope, chat_id, chat["state"], "AGENT_ACTIVE")
+                return ReplyResponse(message=msg_out, outbox_id=str(outbox_id), idempotency_key=idem)
+
+        meta: dict[str, Any] = {"by_user_id": user.id, "by_role": user.role}
+        if client_key:
+            meta["client_idempotency_key"] = client_key
+
         msg_row = conn.execute(
             text(
                 """
@@ -760,12 +882,12 @@ def reply(
             {
                 "cid": chat_id,
                 "body": text_body,
-                "meta": json.dumps({"by_user_id": user.id, "by_role": user.role}),
+                "meta": json.dumps(meta),
             },
         ).fetchone()
         msg_id = msg_row[0]
         msg_ts = msg_row[1]
-        idem = f"agent:{chat_id}:{msg_id}"
+        idem = f"agent:{chat_id}:{user.id}:{client_key}" if client_key else f"agent:{chat_id}:{msg_id}"
 
         outbox_id = conn.execute(
             text(

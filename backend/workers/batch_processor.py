@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import socket
 import time
@@ -19,6 +20,19 @@ class DebounceConfig:
 
 INSTANCE_ID = os.environ.get("INSTANCE_ID") or socket.gethostname()
 AI_ENGINE_URL = os.environ.get("AI_ENGINE_URL", "http://127.0.0.1:8083")
+
+PG_NOTIFY_CHANNEL = "zy_chat_events"
+
+
+def _emit_chat_event_notify(conn, *, client_id: str, event: str, data: dict) -> None:
+    """Fire-and-forget NOTIFY for client_api (or dev tools) listening on PG_NOTIFY_CHANNEL."""
+    payload = json.dumps({"client_id": client_id, "event": event, "data": data}, separators=(",", ":"))
+    if len(payload) > 7500:
+        payload = json.dumps(
+            {"client_id": client_id, "event": event, "data": {"chat_id": data.get("chat_id"), "state": data.get("state")}},
+            separators=(",", ":"),
+        )
+    conn.execute(text("SELECT pg_notify(:channel, CAST(:payload AS text))"), {"channel": PG_NOTIFY_CHANNEL, "payload": payload})
 
 
 def _get_debounce_config() -> DebounceConfig:
@@ -72,15 +86,17 @@ def run_once() -> int:
     Process due batches:
     - seal batch
     - build batch_text from inbound messages since opened_at
-    - call AI engine stub
-    - enqueue a single outbox message (idempotent)
+    - call AI engine
+    - enqueue a single outbox message (idempotent) when action is REPLY
+    - on HANDOFF / NEEDS_OWNER_DATA: set inbox_chats to PENDING_AGENT + pg_notify
     - mark batch PROCESSED
 
     NOTE (M3/M4 client_api): this worker is in a separate process. WS fan-out
     is the client_api DBPoller's responsibility — it picks up the new wa_outbox
     row (kind='AI_REPLY') and pushes ``message_new`` to subscribed agents. Do
     not import client_api from this worker. If you need lower-latency fan-out
-    later, emit a Postgres ``NOTIFY 'chat_events'`` and have client_api LISTEN.
+    later, rely on ``pg_notify('zy_chat_events', …)`` (see ``dev_listen_chat_events.py``)
+    and/or have client_api subscribe with ``LISTEN zy_chat_events``.
     """
     cfg = _get_debounce_config()
     processed = 0
@@ -122,7 +138,7 @@ def run_once() -> int:
             chat_row = conn.execute(
                 text(
                     """
-                    SELECT c.id, c.client_id, c.customer_phone, c.waba_number
+                    SELECT c.id, c.client_id, c.customer_phone, c.waba_number, c.state
                     FROM inbox_chats c
                     WHERE c.id = CAST(:chat_id AS uuid)
                     """
@@ -131,7 +147,7 @@ def run_once() -> int:
             ).fetchone()
             if not chat_row:
                 continue
-            _, client_id, customer_phone, waba_number_id = chat_row
+            _, client_id, customer_phone, waba_number_id, prior_chat_state = chat_row
 
             # Batch text = inbound customer lines in this batch window only (opened_at .. sealed_at).
             msg_rows = conn.execute(
@@ -152,7 +168,7 @@ def run_once() -> int:
             ).all()
             batch_text = "\n".join([r[0] for r in msg_rows]).strip()
 
-            # Call AI engine (stub)
+            # Call AI engine (HTTP contract stable for batch_processor).
             ai = {"action": "REPLY", "reply_text": "Hi!", "intent": "unknown", "routing_intent": "general"}
             try:
                 with httpx.Client(timeout=10.0) as client:
@@ -171,8 +187,8 @@ def run_once() -> int:
             except Exception:
                 ai = {"action": "HANDOFF", "handoff_reason": "ai_unavailable"}
 
-            # For now, only handle REPLY in worker; HANDOFF will be wired next.
-            if ai.get("action") == "REPLY":
+            action = ai.get("action") or "REPLY"
+            if action == "REPLY":
                 reply_text = (ai.get("reply_text") or "").strip()
                 if reply_text:
                     from_number_id = waba_number_id
@@ -201,6 +217,38 @@ def run_once() -> int:
                                 "idem": f"ai:{chat_id}:{batch_id}",
                             },
                         )
+
+            elif action in ("HANDOFF", "NEEDS_OWNER_DATA"):
+                reason = str(
+                    ai.get("handoff_reason")
+                    or ai.get("risk_reason")
+                    or ("needs_owner_data" if action == "NEEDS_OWNER_DATA" else "handoff")
+                )[:4000]
+                conn.execute(
+                    text(
+                        """
+                        UPDATE inbox_chats
+                        SET state = 'PENDING_AGENT',
+                            handoff_reason = :hr,
+                            pending_since = COALESCE(pending_since, now())
+                        WHERE id = CAST(:cid AS uuid)
+                        """
+                    ),
+                    {"cid": str(chat_id), "hr": reason[:2000]},
+                )
+                _emit_chat_event_notify(
+                    conn,
+                    client_id=str(client_id),
+                    event="chat_state_changed",
+                    data={
+                        "chat_id": str(chat_id),
+                        "prior_state": str(prior_chat_state or "AI_ACTIVE"),
+                        "state": "PENDING_AGENT",
+                        "reason": reason[:500],
+                        "source": "batch_processor",
+                        "ai_action": action,
+                    },
+                )
 
             conn.execute(
                 text(
