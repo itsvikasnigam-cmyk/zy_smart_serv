@@ -12,12 +12,12 @@ Living checklist vs the **Whatsapp Manager Blueprint** (product definition, arch
 | § Workers (batch/outbox) | **Chat C** | Overlap with checklist A5/HANDOFF/NEEDS_OWNER — Stem assigns C vs coordinated PRs |
 | § Workers (usage/metrics tables + jobs) | **Chat K** — **landed** (`0005_usage_metrics`, `usage_increment_worker.py`, `metrics_rollup_worker.py`) | **Enforcing** paywall / blocking enqueue remains **Chat B** (M2) + **Chat C** (batch) per HANDOFF |
 | § M1 AI | **Chat D** | |
-| § M5 billing + KYC + checkout | **Chat E** | Checkout routes may split E vs J — Stem decides |
+| § M5 billing + KYC + checkout | **Chat E** | Checkout routes stay **Chat E** (billing_api); **Chat J** is dashboard REST only |
 | § M3 + § M4 REST/WS | **Chat F** | |
-| § M4/M8 client UI | **Chat G** | Consumes Chat J client dash APIs |
-| § M8 control plane + § M9 UI | **Chat H** | Consumes Chat I + Chat J |
-| § M9 APIs + schema | **Chat I** | |
-| § M8 dashboard REST | **Chat J** | |
+| § M4/M8 client UI | **Chat G** | **`GET /dash/client/*`** landed (Chat J) — wire Flutter dashboards |
+| § M8 control plane + § M9 UI | **Chat H** | **`ops_api` `/ops/*` landed (Chat I)** + **`GET /dash/admin/*`** (Chat J) — build Flutter |
+| § M9 APIs + schema | **Chat I** — **landed** (`backend/apps/ops_api/`, `0006_ops_sops`, `dev_ops_api_smoke.py`, `tests/test_ops_api_*.py`) | **M9 interactive SOP UI** remains **Chat H** |
+| § M8 dashboard REST | **Chat J** — **landed** (`routes_dash.py`, dash models in `models.py`) | **M8 interactive control plane** UI remains **Chat H** |
 | § M6 + § M7 | **Chat L** | |
 | § M10 + CI | **Chat M** | |
 | Tests + smoke | **Chat N** | |
@@ -117,8 +117,8 @@ Living checklist vs the **Whatsapp Manager Blueprint** (product definition, arch
 
 ### APIs (backend)
 
-- [ ] Client: `GET /dash/client/overview`, `.../agents`, `.../quality`.
-- [ ] Super-admin: `GET /dash/admin/overview`, `.../collections`, `.../providers/razorpay`, `.../providers/paddle`, `.../ops/whatsapp`, `.../admin/geo` (phase 1 aggregates).
+- [x] Client: `GET /dash/client/overview`, `.../agents`, `.../quality` — **Chat J** (`backend/apps/client_api/routes_dash.py`).
+- [x] Super-admin: `GET /dash/admin/overview`, `.../collections`, `.../providers/razorpay`, `.../providers/paddle`, `.../ops/whatsapp`, `.../admin/geo` (phase 1 aggregates) — **Chat J**; checklist alias `GET /dash/admin/admin/geo` for blueprint path typo.
 
 ### Interactive control plane (super-admin UI)
 
@@ -136,14 +136,14 @@ Blueprint calls for an **Admin → Control Plane** experience (not only REST). T
 
 ## M9 — SOP / Runbook Center (in-system) — **APIs + interactive product**
 
-Blueprint: versioned markdown SOPs, editable by super-admin, **runs** with context, auto-trigger from incidents. Today there is **no** dedicated SOP service or dashboard — implement **backend + interactive UI** together.
+**Backend (`ops_api`, Chat I) is landed** — see § **Data & APIs** below. **Interactive SOP / Runbook UI** (library, editor, runs) remains **Chat H**.
 
 ### Data & APIs
 
-- [ ] Migrations: **`ops_sops`**, **`ops_run_logs`** (and any link tables you need) per blueprint DDL.
-- [ ] `GET/POST /ops/sops`, `GET/PUT /ops/sops/{id}` (versioning on update).
-- [ ] `POST /ops/sops/{id}/run` → creates **`ops_run_logs`** row with `context_json`.
-- [ ] `GET /ops/runs`, `GET /ops/runs/{run_id}` (filters: client, SOP, date, trigger type).
+- [x] Migrations: **`ops_sops`**, **`ops_sop_versions`**, **`ops_run_logs`** (+ indexes) — Alembic **`0006_ops_sops`**; FastAPI **`backend/apps/ops_api/`** (Stem: dedicated app, not `client_api`).
+- [x] `GET/POST /ops/sops`, `GET/PUT /ops/sops/{id}` (versioning on update via `ops_sop_versions`).
+- [x] `POST /ops/sops/{id}/run` → creates **`ops_run_logs`** row with `context_json`.
+- [x] `GET /ops/runs`, `GET /ops/runs/{run_id}` (filters: `client_id`, `sop_id`, `from_date`, `to_date`, `trigger_type`).
 
 ### Interactive SOP / Runbook UI (super-admin) — **required**
 

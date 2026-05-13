@@ -24,10 +24,11 @@ Use this file at the start of **every** Cursor chat (stem or module). Update it 
 - **AI Engine** (`backend/apps/ai_engine/`): `POST /ai/respond` — deterministic routing (`REPLY` / `HANDOFF` / `NEEDS_OWNER_DATA`) + `ops_runtime_config` keys (`ai.urgent_bypass_substrings`, `ai.needs_owner_data_customer_reply`); external LLM layer still optional / future.
 - **Billing (M5)** (`backend/apps/billing_api/`): Alembic `0004_billing` (`bill_plans`, `bill_subscriptions`, `bill_events` with unique `(provider, provider_event_id)`); signed webhooks `POST /webhooks/razorpay` and `POST /webhooks/paddle` (default local **port 8086**); updates `api_clients.billing_provider`, `entitlement_plan`, `billing_plan_code` + upserts `bill_subscriptions`. Linking: Razorpay `payload.payload.subscription.entity.notes.client_id` (UUID string); Paddle `data.custom_data.client_id`. Optional `bill_plans` rows map provider price/plan ids → `plan_code` / `entitlement_plan` via notes `entitlement_plan` / `entitlement`.
 - **Workers**: `batch_processor.py` (seal batch → call AI → enqueue `wa_outbox` `AI_REPLY` on `REPLY`; on **`HANDOFF`** / **`NEEDS_OWNER_DATA`** sets `inbox_chats.state='PENDING_AGENT'` + `handoff_reason` + `pg_notify('zy_chat_events', json)` for subscribers). `outbox_sender.py` (Meta send when `META_ACCESS_TOKEN` set). **Chat K — usage + metrics**: Alembic `0005_usage_metrics` (`bill_usage_daily`, `metrics_daily_client`, `metrics_daily_agent`, `metrics_hourly_system`, `worker_usage_cursors`); `usage_increment_worker.py` (cursor over `inbox_messages` → daily counts + soft/hard threshold timestamps from `ops_runtime_config.usage.daily_inbound_limits`); `metrics_rollup_worker.py` (cron-style rollups). Does **not** modify `batch_processor` / `outbox_sender`.
-- **client_api (M3/M4)** (`backend/apps/client_api/`): JWT login, owner/agent/super_admin RBAC, inbox list/detail, assign/reassign/unassign/escalate, typing presence, agent reply (mirrors `inbox_messages` + enqueues `wa_outbox` `AGENT_REPLY`), optional **`Idempotency-Key`** header on **`POST /inbox/chats/{id}/reply`** for safe client retries (`agent:{chat_id}:{user_id}:{key}`). `/ws` WebSocket + in-process **`DBPoller`** over `inbox_messages`, `wa_outbox`, `chat_assignments`. Dev tool: **`python backend/tools/dev_listen_chat_events.py`** listens on **`zy_chat_events`** NOTIFY payloads. Env: `CLIENT_API_JWT_SECRET`, `CLIENT_API_JWT_TTL_MINUTES`, `CLIENT_API_EVENT_POLL_MS`, `CLIENT_API_CORS_ORIGINS`.
-- **Alembic**: `0001_init_core`, `0002_reliability_queueing`, `0003_wa_trial_map`, `0004_billing`, `0005_usage_metrics`; `backend/alembic.ini` uses `%(here)s/migrations`. No migration needed for client_api — schema already has `api_users`, `chat_assignments`, `chat_presence`.
-- **Dev helpers**: `backend/tools/dev_seed.py`, `dev_send_inbound.py`, `dev_check.py`, `dev_seed_users.py` (owner/agent), `dev_inbox_smoke.py` (drives the assign flow + watches WS without Flutter).
-- **Tests + CI**: `tests/` — `pytest` (payloads, billing signatures, AI contract, optional live gateway when `RUN_WA_GATEWAY_E2E=1`). GitHub Actions **`.github/workflows/ci.yml`** runs **`python -m pytest tests/`** on push/PR to **`main`** / **`master`**.
+- **client_api (M3/M4 + M8 phase-1 dashboards)** (`backend/apps/client_api/`): JWT login, owner/agent/super_admin RBAC, inbox list/detail, assign/reassign/unassign/escalate, typing presence, agent reply (mirrors `inbox_messages` + enqueues `wa_outbox` `AGENT_REPLY`), optional **`Idempotency-Key`** header on **`POST /inbox/chats/{id}/reply`** for safe client retries (`agent:{chat_id}:{user_id}:{key}`). **Read-only dashboards (Chat J)** under **`/dash/*`** — **`GET /dash/client/overview`**, **`/dash/client/agents`**, **`/dash/client/quality`** (`owner` / `agent` / `super_admin` with `?client_id=` for super_admin); **`GET /dash/admin/overview`**, **`/dash/admin/collections`**, **`/dash/admin/providers/razorpay`**, **`/dash/admin/providers/paddle`**, **`/dash/admin/ops/whatsapp`**, **`/dash/admin/geo`** (and checklist alias **`/dash/admin/admin/geo`**) — **`super_admin` only**. OpenAPI tag **`dash`**. Aggregates use `api_clients`, `inbox_chats`, `wa_numbers`, `wa_outbox`, `bill_*`, `metrics_*` where present; placeholders (e.g. MRR, latency) documented in response models. `/ws` WebSocket + in-process **`DBPoller`** over `inbox_messages`, `wa_outbox`, `chat_assignments`. Dev tool: **`python backend/tools/dev_listen_chat_events.py`** listens on **`zy_chat_events`** NOTIFY payloads. Env: `CLIENT_API_JWT_SECRET`, `CLIENT_API_JWT_TTL_MINUTES`, `CLIENT_API_EVENT_POLL_MS`, `CLIENT_API_CORS_ORIGINS`.
+- **ops_api (M9 SOP Center — Chat I)** (`backend/apps/ops_api/`): Dedicated FastAPI app (default local **port 8087**) for versioned Markdown SOPs and run logs. **Stem choice:** parallel app (not mounted under `client_api`). **Auth:** same HS256 secret as inbox — `Authorization: Bearer <JWT>` where the JWT is from **`POST /auth/login`** on `client_api` for **`super_admin` only** (other roles get 403). **DB (Alembic `0006_ops_sops`):** `ops_sops`, `ops_sop_versions` (immutable body per version), `ops_run_logs` (`context_json` JSONB, optional `client_id` FK to `api_clients`, `trigger_type` default `manual`). **REST (OpenAPI tag `ops`):** `GET/POST /ops/sops`, `GET/PUT /ops/sops/{sop_id}`, `POST /ops/sops/{sop_id}/run`, `GET /ops/runs` (filters: `client_id`, `sop_id`, `trigger_type`, `from_date`, `to_date`), `GET /ops/runs/{run_id}`. **Chat H JSON contract:** `POST /ops/sops` body `{ title, slug, category?, status?, body_markdown }` (slug `^[a-z0-9][a-z0-9_-]*$`); `PUT /ops/sops/{id}` body `{ title, category?, status, body_markdown }` (always appends next `ops_sop_versions` row); `POST .../run` body `{ context_json: object, trigger_type?: manual|auto|scheduled|other, client_id?: uuid }`; list/detail responses mirror `SopSummaryOut` / `SopDetailOut` / `RunOut` in `backend/apps/ops_api/models.py`. Env: `OPS_API_CORS_ORIGINS` (optional; default `*`), **`CLIENT_API_JWT_SECRET`** (required; shared with `client_api`).
+- **Alembic**: `0001_init_core`, `0002_reliability_queueing`, `0003_wa_trial_map`, `0004_billing`, `0005_usage_metrics`, `0006_ops_sops`; `backend/alembic.ini` uses `%(here)s/migrations`. No migration needed for client_api — schema already has `api_users`, `chat_assignments`, `chat_presence`.
+- **Dev helpers**: `backend/tools/dev_seed.py`, `dev_send_inbound.py`, `dev_check.py`, `dev_seed_users.py` (owner/agent), `dev_inbox_smoke.py` (drives the assign flow + watches WS without Flutter), **`dev_ops_api_smoke.py`** (httpx: `client_api` login → **`ops_api`** CRUD + run against live **8085/8087**; requires a **`super_admin`** user — not added by `dev_seed_users.py`; see stem note below).
+- **Tests + CI**: `tests/` — `pytest` (payloads, billing signatures, AI contract, **ops_api** OpenAPI/RBAC + mocked DB handlers: `tests/test_ops_api_openapi_rbac.py`, `tests/test_ops_api_handlers_mocked_db.py`, optional live gateway when `RUN_WA_GATEWAY_E2E=1`). GitHub Actions **`.github/workflows/ci.yml`** runs **`python -m pytest tests/`** on push/PR to **`main`** / **`master`**.
 - **README**: **Copy-paste PowerShell command reference** (blocks A–K), **10-step staging smoke**, **Sequential follow-through** (WhatsApp delivery, quality notes, Flutter, CI), local dev paths.
 
 ## Known gaps / next work (pick one module per chat)
@@ -38,6 +39,21 @@ Use this file at the start of **every** Cursor chat (stem or module). Update it 
 4. **M5 Billing**: **landed** (`0004_billing`, `billing_api`). Follow-ups: checkout/session APIs; more webhook event types; operational dashboards.
 5. **Flutter**: `flutter_app/` + **`mobile/`** shells — device hardening, error UX, deep links; confirm **Android emulator** base URL `http://10.0.2.2:8085`.
 6. **M10 Release**: **Basic CI** (pytest only) in `.github/workflows/ci.yml`. Follow-ups: Postgres **service** job + optional `RUN_WA_GATEWAY_E2E`, staging DB, deploy checklist automation.
+7. **M9 (post–Chat I — for Chat A)**: Interactive SOP UI remains **Chat H**. **Stem follow-ups:** (a) add **`super_admin`** to dev seed path (today: manual DB row or one-off insert; `dev_ops_api_smoke.py` needs it); (b) optional **Postgres-backed** pytest or CI job for `ops_api` SQL paths; (c) reconcile external blueprint DDL names vs repo if v6.x differs; (d) **`GET /ops/runs` hard cap 500** — raise/paginate if product needs more.
+
+## Stem note — Chat I extras (Chat A analysis)
+
+Work **beyond** the original Chat I paste block (document here so Stem sequences merges and assigns follow-ups):
+
+| Item | Detail |
+|------|--------|
+| **`ops_sop_versions` table** | Checklist text named `ops_sops` + `ops_run_logs` only; implementation added **`ops_sop_versions`** for immutable Markdown per version (PUT always appends). If external blueprint DDL used a single-table design, align or document deviation. |
+| **`backend/tools/dev_ops_api_smoke.py`** | Live **httpx** smoke: `POST /auth/login` on **client_api** → bearer calls on **ops_api** (create SOP, GET, PUT, POST run, list/get runs). **Does not create users** — needs an existing **`super_admin`** in `api_users`. |
+| **Automated tests** | `tests/test_ops_api_openapi_rbac.py` (OpenAPI paths + 403 for owner/agent); `tests/test_ops_api_handlers_mocked_db.py` (mocked `engine`, no Postgres). **Verified green** on Windows / Python 3.13 (7 tests). |
+| **Shared config** | `backend/shared/config.py`: **`ops_api_cors_origins`** (env **`OPS_API_CORS_ORIGINS`**); `backend/.env.example` updated. |
+| **Not done (intentional)** | No **`super_admin`** in `dev_seed_users.py`; no Postgres service job in CI for `ops_api`; no README “10-step” line-item unless Stem adds it. |
+
+**Suggested Stem actions:** extend `dev_seed_users.py` (or new tool) with optional `--super-admin-email`; add README one-liner for `dev_ops_api_smoke.py`; schedule Chat H against `http://127.0.0.1:8087` OpenAPI.
 
 ## How to run (minimal)
 
@@ -76,9 +92,12 @@ python -m uvicorn backend.apps.client_api.main:app --reload --port 8085
 $env:BILLING_RAZORPAY_WEBHOOK_SECRET="<Razorpay webhook signing secret>"
 $env:BILLING_PADDLE_WEBHOOK_SECRET="<Paddle notification destination secret>"
 python -m uvicorn backend.apps.billing_api.main:app --reload --port 8086
+
+# ops_api (M9): SOP / Runbook — reuse same CLIENT_API_JWT_SECRET as client_api above
+python -m uvicorn backend.apps.ops_api.main:app --reload --port 8087
 ```
 
-Meta env (`.env` or `$env:`): `META_ACCESS_TOKEN`, `META_APP_SECRET`, `META_VERIFY_TOKEN`, `META_GRAPH_VERSION` (default v22.0). Billing env: `BILLING_RAZORPAY_WEBHOOK_SECRET`, `BILLING_PADDLE_WEBHOOK_SECRET` (see `backend/.env.example`).
+Meta env (`.env` or `$env:`): `META_ACCESS_TOKEN`, `META_APP_SECRET`, `META_VERIFY_TOKEN`, `META_GRAPH_VERSION` (default v22.0). Billing env: `BILLING_RAZORPAY_WEBHOOK_SECRET`, `BILLING_PADDLE_WEBHOOK_SECRET` (see `backend/.env.example`). **ops_api** shares **`CLIENT_API_JWT_SECRET`** with client_api; optional **`OPS_API_CORS_ORIGINS`** (default `*`).
 
 client_api smoke (drives the assign flow without Flutter):
 
@@ -91,6 +110,13 @@ python backend\tools\dev_seed_users.py --client-id <CLIENT_ID>
 python backend\tools\dev_send_inbound.py --meta-phone-number-id "NUMERIC_ID_FROM_META" --from +911234567890 --text "hello"
 # 4) drive login → assign → typing → reply → reassign → unassign + watch /ws
 python backend\tools\dev_inbox_smoke.py --listen-seconds 6
+```
+
+**ops_api smoke** (after `0006_ops_sops`, **client_api** + **ops_api** running, same `CLIENT_API_JWT_SECRET`, user must be **`super_admin`**):
+
+```powershell
+python backend\tools\dev_ops_api_smoke.py --email YOUR_SUPER_ADMIN_EMAIL --password YOUR_PASSWORD
+# optional: --client-id <api_clients.uuid>  (must exist)
 ```
 
 ## Usage & metrics workers (Chat K — M2 paywall reads)
@@ -165,8 +191,8 @@ WHERE c.id = :client_id;
 | **F** | M3/M4 client_api | `backend/apps/client_api/` (REST + WS) | This file + checklist § M3 + § M4 |
 | **G** | Flutter **client** | `flutter_app/`, `mobile/` (owner/agent, inbox, client dashboards) | This file + checklist § M4 UX + § M8 client UI |
 | **H** | Flutter **super-admin** | Control plane + **interactive SOP Runbook** UI | This file + checklist § M8 control plane + § M9 UI |
-| **I** | Backend **SOP Center** | Migrations + `/ops/sops*`, `/ops/runs*` (new app or `client_api` — stem picks once) | This file + checklist § M9 APIs |
-| **J** | Backend **dashboard APIs** | `GET /dash/client/*`, `GET /dash/admin/*` (+ metrics reads) | This file + checklist § M8 APIs |
+| **I** | Backend **SOP Center** — **landed** | `backend/apps/ops_api/`, Alembic `0006_ops_sops`, `GET/POST /ops/sops`, `GET/PUT /ops/sops/{id}`, `POST /ops/sops/{id}/run`, `GET /ops/runs`, `GET /ops/runs/{run_id}` (super_admin JWT from `client_api`) | This file + checklist § M9 APIs |
+| **J** | Backend **dashboard APIs** — **landed** | `backend/apps/client_api/routes_dash.py` (+ dash `models.py`); prefix `/dash` | This file + checklist § M8 APIs |
 | **K** | Workers **usage + metrics** — **landed** | `0005_usage_metrics`, `usage_increment_worker.py`, `metrics_rollup_worker.py` | This file + checklist § Workers (usage/metrics) |
 | **L** | M6 + M7 | Broadcast (templates), alerts/aggregates hooks | This file + checklist § M6 + § M7 |
 | **M** | M10 release + CI | Release register/promote/rollback, CI expansion, test gates | This file + checklist § M10 + meta |
@@ -335,36 +361,34 @@ Do not: super-admin control plane or SOP editor — that is Chat H.
 Scope: flutter_app/ (super-admin routes) — Android + Windows desktop targets.
 
 Task:
-1) Control plane: runtime config editor (validate keys, audit/revert UX when Chat I exposes APIs), pricing/debounce/urgent/fallback panels per checklist.
+1) Control plane: runtime config editor (validate keys, audit/revert UX; SOP REST is **`ops_api`** `GET/PUT /ops/sops*` — other ops keys TBD), pricing/debounce/urgent/fallback panels per checklist.
 2) SOP Runbook Center: library, Markdown editor + preview, version history/diff, start run + run log viewer; deep links reserved for Chat L auto-trigger later.
 3) Super-admin dashboards consuming Chat J `/dash/admin/*` when available.
 
 Acceptance:
 - Clear separation from Chat G (no owner/agent inbox logic mixed into super-admin root).
-- Works against dev stubs until I/J backends land; list TODOs for Stem.
+- Works against **`ops_api`** (`http://127.0.0.1:8087`) for SOP/run flows when configured; list TODOs for Stem for gaps.
 
 Do not: wa_gateway or workers — backend stays in B/C/I/J/K.
 ```
 
-### Chat I — Backend **SOP Center** (APIs + schema)
+### Chat I — Backend **SOP Center** *(landed — extend only with Chat A)*
 
 ```text
 @HANDOFF.md Read first. @docs/BLUEPRINT_IMPLEMENTATION_CHECKLIST.md § M9 (Data & APIs).
 
-Stem decides: new FastAPI app (e.g. backend/apps/ops_api/) vs routes under client_api — pick one and document in HANDOFF “What is implemented”.
+Stem decision (documented in HANDOFF “What is implemented”): **dedicated FastAPI app** `backend/apps/ops_api/` (port **8087**), not routes under client_api.
 
-Scope (typical):
-- Alembic migrations: ops_sops, ops_run_logs (and indexes) per blueprint DDL.
-- REST: GET/POST /ops/sops, GET/PUT /ops/sops/{id}, POST /ops/sops/{id}/run, GET /ops/runs, GET /ops/runs/{run_id}.
-- RBAC: super_admin only unless Stem specifies.
+Landed scope:
+- Alembic `0006_ops_sops`: `ops_sops`, `ops_sop_versions`, `ops_run_logs` + indexes.
+- REST + super_admin-only JWT (same secret as client_api `POST /auth/login`).
+- Pytest: `tests/test_ops_api_openapi_rbac.py`, `tests/test_ops_api_handlers_mocked_db.py`.
+- **Additional (stem doc):** `backend/tools/dev_ops_api_smoke.py` — live httpx smoke; see **Stem note — Chat I extras** in HANDOFF.
 
-Acceptance:
-- Pytest or httpx script for CRUD + run creation; no secrets in repo.
-
-Coordinate: Chat H consumes these APIs — agree JSON shapes with Stem before merge.
+Extend with Chat A: new event types, SOP export, stricter trigger_type enums, or merging into a single gateway if ops ever needs owner/agent reads.
 ```
 
-### Chat J — Backend **dashboard APIs**
+### Chat J — Backend **dashboard APIs** *(landed — extend only with Chat A)*
 
 ```text
 @HANDOFF.md Read first. @docs/BLUEPRINT_IMPLEMENTATION_CHECKLIST.md § M8 APIs.
@@ -448,6 +472,7 @@ This chat does not own feature implementation — verification + tests + smoke l
 | What | Command / location |
 |------|---------------------|
 | Unit + contract tests | From repo root: `python -m pytest tests/` |
+| **ops_api (M9)** | `python -m pytest tests/test_ops_api_openapi_rbac.py tests/test_ops_api_handlers_mocked_db.py -v` (mocked DB); live stack: `python backend/tools/dev_ops_api_smoke.py --email … --password …` |
 | Optional HTTP → gateway | `RUN_WA_GATEWAY_E2E=1`, `ZY_E2E_META_PHONE_NUMBER_ID`, `tests/test_gateway_e2e_optional.py` (see README) |
 | Non-dev smoke (10 steps) | README → *Non-dev / staging smoke checklist* |
 
@@ -474,6 +499,11 @@ Constraints: Windows + Postgres + FastAPI; repo root `C:\Users\TV_Station\.curso
 
 ## Last updated
 
+- 2026-05-12 — **Chat I done** (stem bookkeeping): `docs/BLUEPRINT_IMPLEMENTATION_CHECKLIST.md` parallel-ownership row **Chat I landed**; M9 intro text updated (**backend landed**, UI = Chat H). Implementation already logged on 2026-05-13 below.
+- 2026-05-13 — **Chat I extras for Stem (HANDOFF)**: New section **Stem note — Chat I extras (Chat A analysis)** (`ops_sop_versions` vs checklist wording, `dev_ops_api_smoke.py`, pytest file names + Windows/py3.13 green run, `ops_api_cors_origins`, suggested Stem actions); **Known gaps** item **7** (M9 post–Chat I); **Dev helpers** + **Tests + CI** + **Testing** table + **ops_api smoke** PowerShell under client_api smoke; Chat I paste block points to stem note.
+- 2026-05-13 — **Chat I (M9 Data & APIs)**: New FastAPI **`backend/apps/ops_api/`** (port **8087**); Alembic **`0006_ops_sops`** (`ops_sops`, `ops_sop_versions`, `ops_run_logs`); REST under **`/ops/*`** with **`super_admin`** JWT from `client_api`; `OPS_API_CORS_ORIGINS` + shared **`CLIENT_API_JWT_SECRET`** in `backend/.env.example`; pytest **`tests/test_ops_api_*.py`**; checklist § M9 **Data & APIs** marked done.
+- 2026-05-12 — **Chat J done** (stem bookkeeping): `docs/BLUEPRINT_IMPLEMENTATION_CHECKLIST.md` § M8 **APIs** marked `[x]`; parallel-ownership row **Chat J landed**; HANDOFF multi-chat table + **Chat J** paste heading marked landed. Implementation already noted on 2026-05-13 below.
+- 2026-05-13 — **M8 dashboard read APIs (Chat J)** in `client_api`: `routes_dash.py` + response models; `GET /dash/client/*` and `GET /dash/admin/*` (see “What is implemented” for paths and RBAC).
 - 2026-05-12 — **Chat K done** (stem bookkeeping): `docs/BLUEPRINT_IMPLEMENTATION_CHECKLIST.md` — § Workers items for usage gate + metrics rollup marked `[x]`; parallel-ownership row shows **Chat K landed**. Paywall **enforcement** in M2/batch paths remains **Chat B / Chat C** (see checklist notes on those lines).
 - 2026-05-12 — **Multi-chat model**: table A–N; Chat A stem **full control** + `@docs/BLUEPRINT_IMPLEMENTATION_CHECKLIST.md`; paste blocks **G–M** (Flutter split, SOP backend, dash APIs, usage/metrics workers, M6/M7, M10); **Chat N** = QA/smoke; B–F link to checklist sections.
 - 2026-05-12 — **Stem wrap-up**: `batch_processor` HANDOFF/NEEDS_OWNER_DATA + **`pg_notify('zy_chat_events')`**; client_api **`Idempotency-Key`** on agent reply; **`dev_listen_chat_events.py`**; README **Sequential follow-through** + CI note; **`.github/workflows/ci.yml`**; HANDOFF gaps refreshed; **Next chat** paste block above.
