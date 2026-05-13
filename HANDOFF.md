@@ -16,15 +16,16 @@ Use this file at the start of **every** Cursor chat (stem or module). Update it 
 
 - Business spec: your **v6.0** document (plans, journeys, M1–M7).
 - Architecture refinements agreed in chat → **v6.1** (store-first inbound, debounce 3s/10s, outbox, Paddle+Razorpay, India pool + global BYON, dashboards, SOPs, gated releases).
+- **Living implementation checklist** (blueprint vs repo, checkboxes, M9 interactive SOP UI, meta “remove when done”): [`docs/BLUEPRINT_IMPLEMENTATION_CHECKLIST.md`](docs/BLUEPRINT_IMPLEMENTATION_CHECKLIST.md).
 
 ## What is already implemented (this repo)
 
 - FastAPI **WA Gateway** (`backend/apps/wa_gateway/`): Meta verify, inbound store-first + dedupe `meta_msg_id`, routing by `phone_number_id` → `wa_numbers`, debounce batch rows, status webhook → `wa_status_events` / `wa_outbox` update.
 - **AI Engine** (`backend/apps/ai_engine/`): `POST /ai/respond` — deterministic routing (`REPLY` / `HANDOFF` / `NEEDS_OWNER_DATA`) + `ops_runtime_config` keys (`ai.urgent_bypass_substrings`, `ai.needs_owner_data_customer_reply`); external LLM layer still optional / future.
 - **Billing (M5)** (`backend/apps/billing_api/`): Alembic `0004_billing` (`bill_plans`, `bill_subscriptions`, `bill_events` with unique `(provider, provider_event_id)`); signed webhooks `POST /webhooks/razorpay` and `POST /webhooks/paddle` (default local **port 8086**); updates `api_clients.billing_provider`, `entitlement_plan`, `billing_plan_code` + upserts `bill_subscriptions`. Linking: Razorpay `payload.payload.subscription.entity.notes.client_id` (UUID string); Paddle `data.custom_data.client_id`. Optional `bill_plans` rows map provider price/plan ids → `plan_code` / `entitlement_plan` via notes `entitlement_plan` / `entitlement`.
-- **Workers**: `batch_processor.py` (seal batch → call AI → enqueue `wa_outbox` `AI_REPLY` on `REPLY`; on **`HANDOFF`** / **`NEEDS_OWNER_DATA`** sets `inbox_chats.state='PENDING_AGENT'` + `handoff_reason` + `pg_notify('zy_chat_events', json)` for subscribers). `outbox_sender.py` (Meta send when `META_ACCESS_TOKEN` set).
+- **Workers**: `batch_processor.py` (seal batch → call AI → enqueue `wa_outbox` `AI_REPLY` on `REPLY`; on **`HANDOFF`** / **`NEEDS_OWNER_DATA`** sets `inbox_chats.state='PENDING_AGENT'` + `handoff_reason` + `pg_notify('zy_chat_events', json)` for subscribers). `outbox_sender.py` (Meta send when `META_ACCESS_TOKEN` set). **Chat K — usage + metrics**: Alembic `0005_usage_metrics` (`bill_usage_daily`, `metrics_daily_client`, `metrics_daily_agent`, `metrics_hourly_system`, `worker_usage_cursors`); `usage_increment_worker.py` (cursor over `inbox_messages` → daily counts + soft/hard threshold timestamps from `ops_runtime_config.usage.daily_inbound_limits`); `metrics_rollup_worker.py` (cron-style rollups). Does **not** modify `batch_processor` / `outbox_sender`.
 - **client_api (M3/M4)** (`backend/apps/client_api/`): JWT login, owner/agent/super_admin RBAC, inbox list/detail, assign/reassign/unassign/escalate, typing presence, agent reply (mirrors `inbox_messages` + enqueues `wa_outbox` `AGENT_REPLY`), optional **`Idempotency-Key`** header on **`POST /inbox/chats/{id}/reply`** for safe client retries (`agent:{chat_id}:{user_id}:{key}`). `/ws` WebSocket + in-process **`DBPoller`** over `inbox_messages`, `wa_outbox`, `chat_assignments`. Dev tool: **`python backend/tools/dev_listen_chat_events.py`** listens on **`zy_chat_events`** NOTIFY payloads. Env: `CLIENT_API_JWT_SECRET`, `CLIENT_API_JWT_TTL_MINUTES`, `CLIENT_API_EVENT_POLL_MS`, `CLIENT_API_CORS_ORIGINS`.
-- **Alembic**: `0001_init_core`, `0002_reliability_queueing`, `0003_wa_trial_map`, `0004_billing`; `backend/alembic.ini` uses `%(here)s/migrations`. No migration needed for client_api — schema already has `api_users`, `chat_assignments`, `chat_presence`.
+- **Alembic**: `0001_init_core`, `0002_reliability_queueing`, `0003_wa_trial_map`, `0004_billing`, `0005_usage_metrics`; `backend/alembic.ini` uses `%(here)s/migrations`. No migration needed for client_api — schema already has `api_users`, `chat_assignments`, `chat_presence`.
 - **Dev helpers**: `backend/tools/dev_seed.py`, `dev_send_inbound.py`, `dev_check.py`, `dev_seed_users.py` (owner/agent), `dev_inbox_smoke.py` (drives the assign flow + watches WS without Flutter).
 - **Tests + CI**: `tests/` — `pytest` (payloads, billing signatures, AI contract, optional live gateway when `RUN_WA_GATEWAY_E2E=1`). GitHub Actions **`.github/workflows/ci.yml`** runs **`python -m pytest tests/`** on push/PR to **`main`** / **`master`**.
 - **README**: **Copy-paste PowerShell command reference** (blocks A–K), **10-step staging smoke**, **Sequential follow-through** (WhatsApp delivery, quality notes, Flutter, CI), local dev paths.
@@ -63,6 +64,10 @@ $env:AI_ENGINE_URL="http://127.0.0.1:8083"
 python backend\workers\batch_processor.py
 python backend\workers\outbox_sender.py
 
+# usage + metrics (Chat K): bill_usage_daily + rollups (optional alongside batch_processor)
+python backend\workers\usage_increment_worker.py
+python backend\workers\metrics_rollup_worker.py
+
 # client_api (M3/M4): inbox + assignments + WS
 $env:CLIENT_API_JWT_SECRET="$(python -c "import secrets; print(secrets.token_urlsafe(48))")"
 python -m uvicorn backend.apps.client_api.main:app --reload --port 8085
@@ -88,6 +93,49 @@ python backend\tools\dev_send_inbound.py --meta-phone-number-id "NUMERIC_ID_FROM
 python backend\tools\dev_inbox_smoke.py --listen-seconds 6
 ```
 
+## Usage & metrics workers (Chat K — M2 paywall reads)
+
+**Run** (after `alembic upgrade head`, same `$env:PYTHONPATH` / `$env:DATABASE_URL` as other workers):
+
+```powershell
+python backend\workers\usage_increment_worker.py
+python backend\workers\metrics_rollup_worker.py
+```
+
+**Env (optional overrides)** — loaded via `backend.shared.config.Settings` / root `.env` (same pattern as other apps):
+
+| Env var | Default | Purpose |
+|---------|---------|---------|
+| `USAGE_WORKER_BATCH_SIZE` | `500` | Max `inbox_messages` rows consumed per usage tick |
+| `USAGE_WORKER_SLEEP_SECONDS` | `2` | Sleep between ticks when idle |
+| `METRICS_ROLLUP_SLEEP_SECONDS` | `300` | Sleep between full rollup cycles |
+| `METRICS_ROLLUP_LOOKBACK_DAYS` | `3` | UTC calendar days recomputed each cycle (`metrics_daily_*`) |
+| `METRICS_ROLLUP_HOURLY_LOOKBACK` | `48` | Recent UTC hour buckets refreshed in `metrics_hourly_system` |
+
+**M2 gateway (Chat B) — how to read usage (no Python import from workers):**
+
+1. **Per-client inbound today (UTC calendar day)** — join `api_clients` to today’s `bill_usage_daily` row (created/updated by `usage_increment_worker`):
+
+```sql
+SELECT
+  c.id AS client_id,
+  c.entitlement_plan,
+  COALESCE(u.inbound_customer_messages, 0) AS inbound_customer_messages_today_utc,
+  u.soft_threshold_crossed_at,
+  u.hard_threshold_crossed_at
+FROM api_clients c
+LEFT JOIN bill_usage_daily u
+  ON u.client_id = c.id
+ AND u.usage_date = (timezone('utc', now()))::date
+WHERE c.id = :client_id;
+```
+
+2. **Limits** — read JSON from `ops_runtime_config` where `key = 'usage.daily_inbound_limits'`. Object keys match `api_clients.entitlement_plan` (`trial`, `starter`, `growth`, `pro`, `churned`). Each plan has integer `soft_warn` and `hard_block` thresholds on **inbound customer messages** for that UTC day. Optional fallback key `_default` if a plan is missing.
+
+3. **Paywall suggestion (Stem / Chat B):** if `inbound_customer_messages_today_utc >= hard_block` (from the JSON for that plan), treat as **hard usage block** for AI enqueue / normal accept (future: `PAYWALL` outbox or template path). If only `>= soft_warn`, emit **owner warn** / dashboard signal only; `soft_threshold_crossed_at` / `hard_threshold_crossed_at` on `bill_usage_daily` record first crossing for auditing.
+
+**Coordinate:** Chat **E** owns subscription truth on `api_clients`; Chat **B** adds gateway checks once Stem orders merge.
+
 ## Billing (M5 layout)
 
 **Choice:** dedicated FastAPI app `backend/apps/billing_api/` (default **port 8086**), parallel to `client_api` (8085), so provider webhook signing and raw-body verification stay separate from Meta WA webhooks and JWT APIs.
@@ -107,16 +155,28 @@ python backend\tools\dev_inbox_smoke.py --listen-seconds 6
 
 ## Multi-chat workflow
 
-| Chat role | Scope | Starts with |
-|-----------|--------|-------------|
-| **Stem** | Ordering, integration, release gates, conflicts | This file + git status |
-| **M2** | Webhooks, routing, outbox, Meta | This file + `backend/apps/wa_gateway/` |
-| **M1** | AI pipeline only | This file + `backend/apps/ai_engine/` |
-| **M4** | Inbox, assignments, WS | This file + `backend/apps/client_api/` |
-| **M5** | Billing | This file + `backend/migrations/versions/` + `backend/apps/billing_api/` |
-| **Flutter** | UI only | This file + `flutter_app/` |
+| Chat | Role | Scope (primary paths) | Starts with |
+|------|------|----------------------|-------------|
+| **A — Stem** | Integration lead; sequencing; merge gates; **full control** | No large feature work unless unblocking; owns [`docs/BLUEPRINT_IMPLEMENTATION_CHECKLIST.md`](docs/BLUEPRINT_IMPLEMENTATION_CHECKLIST.md) check-offs when merging | This file + git status + checklist |
+| **B** | M2 gateway | `backend/apps/wa_gateway/`, gateway migrations | This file + checklist § M2 |
+| **C** | Workers (batch + outbox) | `backend/workers/batch_processor.py`, `outbox_sender.py`, worker config | This file + checklist § Workers (batch/outbox rows) |
+| **D** | M1 AI | `backend/apps/ai_engine/` | This file + checklist § M1 |
+| **E** | M5 billing | `backend/apps/billing_api/`, billing migrations | This file + checklist § M5 |
+| **F** | M3/M4 client_api | `backend/apps/client_api/` (REST + WS) | This file + checklist § M3 + § M4 |
+| **G** | Flutter **client** | `flutter_app/`, `mobile/` (owner/agent, inbox, client dashboards) | This file + checklist § M4 UX + § M8 client UI |
+| **H** | Flutter **super-admin** | Control plane + **interactive SOP Runbook** UI | This file + checklist § M8 control plane + § M9 UI |
+| **I** | Backend **SOP Center** | Migrations + `/ops/sops*`, `/ops/runs*` (new app or `client_api` — stem picks once) | This file + checklist § M9 APIs |
+| **J** | Backend **dashboard APIs** | `GET /dash/client/*`, `GET /dash/admin/*` (+ metrics reads) | This file + checklist § M8 APIs |
+| **K** | Workers **usage + metrics** — **landed** | `0005_usage_metrics`, `usage_increment_worker.py`, `metrics_rollup_worker.py` | This file + checklist § Workers (usage/metrics) |
+| **L** | M6 + M7 | Broadcast (templates), alerts/aggregates hooks | This file + checklist § M6 + § M7 |
+| **M** | M10 release + CI | Release register/promote/rollback, CI expansion, test gates | This file + checklist § M10 + meta |
+| **N** | QA / staging | Pytest, smoke checklists, staging verification | This file + `tests/` + README smoke |
 
-**Rule:** Each module chat pastes **this file** (or `@HANDOFF.md`) first, then only the files for that module. Stem merges when acceptance criteria met.
+**Rules**
+
+1. **Chat A (Stem)** assigns order when migrations or shared contracts touch multiple chats; module chats do **not** merge conflicting schema changes without A’s sequencing.
+2. Each module chat pastes **this file** (`@HANDOFF.md`) first, then **only** the paths in its paste block.
+3. After a module chat finishes, **Stem** integrates: migration order, env vars, smoke, checklist `[x]` updates in [`docs/BLUEPRINT_IMPLEMENTATION_CHECKLIST.md`](docs/BLUEPRINT_IMPLEMENTATION_CHECKLIST.md).
 
 **First line for every new chat (so the agent loads context):**
 
@@ -130,26 +190,32 @@ python backend\tools\dev_inbox_smoke.py --listen-seconds 6
 
 Use **one block per chat**. Always start with the **First line** above, then paste the block.
 
-### Chat A — Stem (integration + sequencing)
+**Blueprint checklist:** [`docs/BLUEPRINT_IMPLEMENTATION_CHECKLIST.md`](docs/BLUEPRINT_IMPLEMENTATION_CHECKLIST.md) — Stem (Chat A) updates checkboxes when merging; module chats reference their section(s).
+
+### Chat A — Stem (integration + sequencing — **full control**)
 
 ```text
 @HANDOFF.md Read this first. Repo root: C:\Users\TV_Station\.cursor\projects\empty-window
+@docs/BLUEPRINT_IMPLEMENTATION_CHECKLIST.md Read the checklist; you keep it in sync when merging.
 
-You are the stem chat. Do not implement large features yourself unless unblocking.
+You are Chat A — the stem chat. You have full control of ordering, merge gates, and conflict resolution.
 
-Tasks:
-1) Reconcile HANDOFF.md with git reality (list what changed vs doc).
-2) Define the next 3 vertical slices in order (each shippable + testable).
-3) For each slice, write acceptance criteria and which module chat owns it.
-4) After module chats finish, you integrate: migrations order, env vars, one end-to-end smoke checklist.
+Do:
+- Assign work to Chats B–F and G–N; resolve overlaps (e.g. Chat C vs Chat K on batch_processor — split: C = seal/AI/outbox behavior; K = new usage/metrics workers only unless you explicitly assign A5 to C).
+- Reconcile HANDOFF.md + checklist with git reality after each merge.
+- Define the next 1–3 vertical slices; acceptance criteria per slice; which chat owns each.
+- Integrate after module chats: migration order, env vars, README/HANDOFF notes, smoke pass.
 
-Constraints: Windows + Postgres + FastAPI; keep Flutter out of backend-only slices.
+Do not (unless unblocking): large greenfield features; let the scoped chats implement.
+
+Constraints: Windows + Postgres + FastAPI; $env:PYTHONPATH="$PWD" from repo root; do not commit `.env`.
 ```
 
 ### Chat B — M2 WhatsApp Gateway (routing, trial, webhooks)
 
 ```text
-@HANDOFF.md Read first. Then read and modify only:
+@HANDOFF.md Read first. @docs/BLUEPRINT_IMPLEMENTATION_CHECKLIST.md § M2.
+Then read and modify only:
 - backend/apps/wa_gateway/main.py
 - backend/apps/wa_gateway/meta_payload.py
 - backend/apps/wa_gateway/status_payload.py
@@ -171,7 +237,8 @@ Give exact migration + code changes; list manual test commands using backend/too
 ### Chat C — Workers (batch + outbox reliability)
 
 ```text
-@HANDOFF.md Read first. Then read and modify only:
+@HANDOFF.md Read first. @docs/BLUEPRINT_IMPLEMENTATION_CHECKLIST.md § Workers (batch_processor, outbox_sender).
+Then read and modify only:
 - backend/workers/batch_processor.py
 - backend/workers/outbox_sender.py
 - backend/shared/config.py (only if new env keys)
@@ -191,7 +258,8 @@ Give PowerShell commands to run workers + dev_check.py.
 ### Chat D — M1 AI Engine (replace stub)
 
 ```text
-@HANDOFF.md Read first. Then read and modify only:
+@HANDOFF.md Read first. @docs/BLUEPRINT_IMPLEMENTATION_CHECKLIST.md § M1.
+Then read and modify only:
 - backend/apps/ai_engine/main.py
 - (new) backend/apps/ai_engine/* helpers as needed
 
@@ -208,7 +276,8 @@ Do not touch wa_gateway unless the request/response contract must change—then 
 ### Chat E — M5 Billing (Razorpay India + Paddle global)
 
 ```text
-@HANDOFF.md Read first. Implement billing in backend (new app or extend existing layout—pick one, document in HANDOFF).
+@HANDOFF.md Read first. @docs/BLUEPRINT_IMPLEMENTATION_CHECKLIST.md § M5.
+Implement billing in backend (new app or extend existing layout—pick one, document in HANDOFF).
 
 Task:
 1) bill_plans / bill_subscriptions / bill_events (migrations + models).
@@ -225,7 +294,8 @@ Give PowerShell or curl examples for sandbox webhook testing.
 ### Chat F — M3/M4 Client API + Inbox (REST + WS skeleton)
 
 ```text
-@HANDOFF.md Read first. Create new FastAPI app OR extend repo layout—follow existing patterns.
+@HANDOFF.md Read first. @docs/BLUEPRINT_IMPLEMENTATION_CHECKLIST.md § M3 + § M4.
+Create new FastAPI app OR extend repo layout—follow existing patterns.
 
 Task:
 1) JWT auth skeleton (owner/agent/super_admin).
@@ -238,32 +308,137 @@ Acceptance:
 Do not implement full Flutter in this chat.
 ```
 
-### Chat G — Flutter (client + super-admin shells)
+### Chat G — Flutter **client** (owner / agent)
 
 ```text
-@HANDOFF.md Read first. Flutter app lives under flutter_app/ (package zy_smart_flutter).
+@HANDOFF.md Read first. @docs/BLUEPRINT_IMPLEMENTATION_CHECKLIST.md § M4 (inbox UX) + § M8 client dashboard.
+
+Scope: flutter_app/ and mobile/ — **owner + agent only** (no super-admin heavy UI here).
 
 Task:
-1) Login + role-based navigation (owner vs super_admin).
-2) Inbox screen consuming REST + WS from Chat F.
-3) Super-admin “control plane” placeholder for ops_runtime_config.
+1) Harden login + role nav for owner vs agent; inbox list/detail + WS (REST from client_api Chat F).
+2) Client dashboard **shells** wired to Chat J APIs when ready (stub with mock data until `/dash/client/*` exists).
+3) Document ANDROID_EMULATOR / Windows base URLs (e.g. CLIENT_API_BASE_URL).
 
 Acceptance:
-- Runs on Android + Windows desktop; document build commands.
-- Backend base URL configurable for dev (client_api default http://127.0.0.1:8085; use dart-define CLIENT_API_BASE_URL).
+- Runs on Android + Windows desktop; README or flutter_app/README.md build/run commands updated.
+- Coordinate with Chat A before adding deps that affect CI.
+
+Do not: super-admin control plane or SOP editor — that is Chat H.
 ```
 
-### Chat H — Testing / staging gate (M10-lite)
+### Chat H — Flutter **super-admin** (control plane + interactive SOP UI)
 
 ```text
-@HANDOFF.md Read first.
+@HANDOFF.md Read first. @docs/BLUEPRINT_IMPLEMENTATION_CHECKLIST.md § M8 (control plane) + § M9 (interactive SOP UI).
+
+Scope: flutter_app/ (super-admin routes) — Android + Windows desktop targets.
 
 Task:
-1) Add minimal pytest (or scripts) for meta_payload + status_payload parsing; optional gateway smoke.
-2) Add a 10-step non-dev smoke checklist (README or under this doc).
+1) Control plane: runtime config editor (validate keys, audit/revert UX when Chat I exposes APIs), pricing/debounce/urgent/fallback panels per checklist.
+2) SOP Runbook Center: library, Markdown editor + preview, version history/diff, start run + run log viewer; deep links reserved for Chat L auto-trigger later.
+3) Super-admin dashboards consuming Chat J `/dash/admin/*` when available.
 
 Acceptance:
-- One command runs the automated tests locally (document which).
+- Clear separation from Chat G (no owner/agent inbox logic mixed into super-admin root).
+- Works against dev stubs until I/J backends land; list TODOs for Stem.
+
+Do not: wa_gateway or workers — backend stays in B/C/I/J/K.
+```
+
+### Chat I — Backend **SOP Center** (APIs + schema)
+
+```text
+@HANDOFF.md Read first. @docs/BLUEPRINT_IMPLEMENTATION_CHECKLIST.md § M9 (Data & APIs).
+
+Stem decides: new FastAPI app (e.g. backend/apps/ops_api/) vs routes under client_api — pick one and document in HANDOFF “What is implemented”.
+
+Scope (typical):
+- Alembic migrations: ops_sops, ops_run_logs (and indexes) per blueprint DDL.
+- REST: GET/POST /ops/sops, GET/PUT /ops/sops/{id}, POST /ops/sops/{id}/run, GET /ops/runs, GET /ops/runs/{run_id}.
+- RBAC: super_admin only unless Stem specifies.
+
+Acceptance:
+- Pytest or httpx script for CRUD + run creation; no secrets in repo.
+
+Coordinate: Chat H consumes these APIs — agree JSON shapes with Stem before merge.
+```
+
+### Chat J — Backend **dashboard APIs**
+
+```text
+@HANDOFF.md Read first. @docs/BLUEPRINT_IMPLEMENTATION_CHECKLIST.md § M8 APIs.
+
+Task:
+Implement read APIs: GET /dash/client/overview|agents|quality and GET /dash/admin/overview|collections|providers/razorpay|providers/paddle|ops/whatsapp|admin/geo (phase 1 aggregates OK with placeholders where metrics tables missing).
+
+Scope: Prefer new router module under client_api or parallel app — Stem picks; wire to DB views/tables as they exist; stub zeros until Chat K metrics job exists.
+
+Acceptance:
+- OpenAPI visible; super_admin vs owner scoping enforced; document in HANDOFF.
+
+Coordinate: Chats G and H consume these endpoints.
+```
+
+### Chat K — Workers **usage gate + metrics rollup** *(landed 2026-05-13 — extend only with Chat A)*
+
+```text
+@HANDOFF.md Read first. @docs/BLUEPRINT_IMPLEMENTATION_CHECKLIST.md § Workers (bill_usage_daily, metrics_daily_*).
+
+Task:
+1) Migrations for bill_usage_daily, metrics_daily_client, metrics_daily_agent, metrics_hourly_system (if not present).
+2) Worker process(es): usage increment + soft/hard thresholds; metrics rollup cron-style loop.
+3) Do not change batch_processor/outbox_sender unless Stem assigns overlap (default: coordinate with Chat C — K adds new files only).
+
+Acceptance:
+- Document env vars + how M2 paywall will read usage (interface for future Chat B work).
+
+Coordinate: Chat E billing; Chat B gateway paywall hooks — Stem orders merges.
+```
+
+### Chat L — **M6 broadcast + M7 alerts** (backend)
+
+```text
+@HANDOFF.md Read first. @docs/BLUEPRINT_IMPLEMENTATION_CHECKLIST.md § M6 + § M7.
+
+Task:
+- M6: template-only broadcast pipeline; plan gating (trial/starter block); opt-in model — minimal vertical slice first.
+- M7: alert hooks (e.g. outbox DEAD spike, webhook failures) — can start with logging + DB rows before paging.
+
+Acceptance:
+- Stem-approved scope document in HANDOFF “Known gaps” or checklist notes; no silent production sends.
+
+Coordinate: Chat I for auto-opening SOP runs from alerts (phase 2).
+```
+
+### Chat M — **M10 release manager + CI expansion**
+
+```text
+@HANDOFF.md Read first. @docs/BLUEPRINT_IMPLEMENTATION_CHECKLIST.md § M10 + checklist meta task (do not delete checklist until Stem says so).
+
+Task:
+- Internal APIs: register build + test hash, promote, rollback (admin-gated); audit fields.
+- CI: Postgres service job, optional gateway E2E, artifact policy — incremental PRs.
+
+Acceptance:
+- Document promotion flow in README; Chat N runs full smoke after CI changes.
+
+Coordinate: Chat A owns whether checklist file removal criteria are met.
+```
+
+### Chat N — **QA / staging gates**
+
+```text
+@HANDOFF.md Read first. tests/ + README (smoke, automated tests).
+
+Task:
+1) Extend pytest/contract tests as Stem requests per slice (debounce, urgent, billing, dash APIs).
+2) Keep README **10-step staging smoke** accurate; optional RUN_WA_GATEWAY_E2E docs.
+
+Acceptance:
+- `python -m pytest tests/` passes locally; document any new env vars.
+
+This chat does not own feature implementation — verification + tests + smoke lists only unless Stem assigns a small fix.
 ```
 
 **Status:** `python -m pytest tests/` from repo root (see README **Automated tests**). Optional live gateway: `RUN_WA_GATEWAY_E2E=1` + `ZY_E2E_META_PHONE_NUMBER_ID`. Full **10-step staging smoke** checklist: README section *Non-dev / staging smoke checklist (10 steps)*.
@@ -299,10 +474,13 @@ Constraints: Windows + Postgres + FastAPI; repo root `C:\Users\TV_Station\.curso
 
 ## Last updated
 
+- 2026-05-12 — **Chat K done** (stem bookkeeping): `docs/BLUEPRINT_IMPLEMENTATION_CHECKLIST.md` — § Workers items for usage gate + metrics rollup marked `[x]`; parallel-ownership row shows **Chat K landed**. Paywall **enforcement** in M2/batch paths remains **Chat B / Chat C** (see checklist notes on those lines).
+- 2026-05-12 — **Multi-chat model**: table A–N; Chat A stem **full control** + `@docs/BLUEPRINT_IMPLEMENTATION_CHECKLIST.md`; paste blocks **G–M** (Flutter split, SOP backend, dash APIs, usage/metrics workers, M6/M7, M10); **Chat N** = QA/smoke; B–F link to checklist sections.
 - 2026-05-12 — **Stem wrap-up**: `batch_processor` HANDOFF/NEEDS_OWNER_DATA + **`pg_notify('zy_chat_events')`**; client_api **`Idempotency-Key`** on agent reply; **`dev_listen_chat_events.py`**; README **Sequential follow-through** + CI note; **`.github/workflows/ci.yml`**; HANDOFF gaps refreshed; **Next chat** paste block above.
 - 2026-05-13 — **M5 billing**: Alembic `0004_billing` (`bill_plans`, `bill_subscriptions`, `bill_events`); FastAPI `billing_api` on port **8086** with signed `POST /webhooks/razorpay` and `POST /webhooks/paddle`; `BILLING_*` env keys in `backend/.env.example`; README billing curl/PowerShell; HANDOFF **Billing (M5 layout)** subsection.
-- 2026-05-13 — **Flutter `flutter_app/`**: scaffold + client_api login/inbox/WS shell + super_admin stub; README Flutter section; Chat G block points at `flutter_app/`.
-- 2026-05-13 — **M10-lite testing**: `tests/` pytest (meta/status extract, dev inbound contract, optional gateway e2e); README **10-step staging smoke** + automated test section; `backend/tools/__init__.py` for imports; `build_meta_inbound_webhook_payload` in `dev_send_inbound.py`.
+- 2026-05-13 — **Chat K usage/metrics** (implementation): Alembic `0005_usage_metrics` + `usage_increment_worker.py` + `metrics_rollup_worker.py`; HANDOFF **Usage & metrics workers**; `backend/.env.example` + `Settings` knobs.
+- 2026-05-13 — **Flutter `flutter_app/`**: scaffold + client_api login/inbox/WS shell + super_admin stub; README Flutter section; HANDOFF **Chat G / Chat H** paste blocks split client vs super-admin.
+- 2026-05-13 — **M10-lite testing**: `tests/` pytest …; HANDOFF **Chat N** owns QA/smoke (replaces prior Chat H testing-only block).
 - 2026-05-12 — multi-chat stem; added **Paste blocks for new Cursor chats** (Chats A–H).
 - 2026-05-12 — M1: documented `ops_runtime_config` keys `ai.urgent_bypass_substrings` and `ai.needs_owner_data_customer_reply` in gap list.
 - 2026-05-12 — **M3/M4 client_api landed**: JWT login, RBAC, inbox list/detail, assign/reassign/unassign/escalate, typing, agent reply (mirrors `inbox_messages` + outbox `AGENT_REPLY`), `/ws` with `message_new` / `assignment_changed` / `typing` / `chat_state_changed`. Cross-process events via in-process `DBPoller` over `inbox_messages` / `wa_outbox` / `chat_assignments`. New env keys; new dev tools `dev_seed_users.py` + `dev_inbox_smoke.py`.
