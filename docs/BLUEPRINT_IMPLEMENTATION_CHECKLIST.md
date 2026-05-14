@@ -14,9 +14,9 @@ Living checklist vs the **Whatsapp Manager Blueprint** (product definition, arch
 | § M1 AI | **Chat D** | |
 | § M5 billing + KYC + checkout | **Chat E** | Checkout routes stay **Chat E** (billing_api); **Chat J** is dashboard REST only |
 | § M3 + § M4 REST/WS | **Chat F** | |
-| § M4/M8 client UI | **Chat G** | **`GET /dash/client/*`** landed (Chat J) — wire Flutter dashboards |
-| § M8 control plane + § M9 UI | **Chat H** | **`ops_api` `/ops/*` landed (Chat I)** + **`GET /dash/admin/*`** (Chat J) — build Flutter |
-| § M9 APIs + schema | **Chat I** — **landed** (`backend/apps/ops_api/`, `0006_ops_sops`, `dev_ops_api_smoke.py`, `tests/test_ops_api_*.py`) | **M9 interactive SOP UI** remains **Chat H** |
+| § M4/M8 client UI | **Chat G** — **landed** (`flutter_app` + `mobile`: owner/agent inbox, WS, **`/dash/client/*`**) | **§ M4** backend state machine rows still open (Chat F/C); **device smoke** Stem/Chat N |
+| § M8 control plane + § M9 UI | **Chat H** — **landed** (`flutter_app` / `mobile`: SOP library…runs, read-only M8 cards, admin dash reader) | **`ops_api`** + **`GET /dash/admin/*`**; device **smoke** = you / Chat N |
+| § M9 APIs + schema | **Chat I** — **landed** (`backend/apps/ops_api/`, `0006_ops_sops`, `dev_ops_api_smoke.py`, `tests/test_ops_api_*.py`) | Includes **`GET /ops/sops/{id}/versions`** (Stem confirmed canonical). **§ M9 interactive UI** landed **Chat H** (`flutter_app` / `mobile`). |
 | § M8 dashboard REST | **Chat J** — **landed** (`routes_dash.py`, dash models in `models.py`) | **M8 interactive control plane** UI remains **Chat H** |
 | § M6 + § M7 | **Chat L** | |
 | § M10 + CI | **Chat M** | |
@@ -90,6 +90,19 @@ Living checklist vs the **Whatsapp Manager Blueprint** (product definition, arch
 
 ---
 
+## Owner/agent Flutter UI (Chat G — `flutter_app` + `mobile`)
+
+Shipped **without** changing super-admin SOP scope (Chat H). Does **not** satisfy full blueprint **§ M4** backend state machine until Chat F/C land migrations/APIs.
+
+- [x] **Login / session:** `GET /auth/me` → reject unknown roles (clear token + error); **`wsLastError`**; WS connect **try/catch**; disconnect clears WS error; role snackbars; WS after login for tenant users; snackbar if WS fails but REST OK; password cleared on success.
+- [x] **Nav + refresh:** `flutter_app` Inbox · Dashboard · Account; `mobile` Inbox · Dashboard · Settings (`HomeShell` tab order **0/1/2**); app bar **Refresh** → **`bumpDashGeneration()`** (inbox + dashboard).
+- [x] **Inbox + thread:** filters (All / Mine / Unassigned / Needs agent), phone search, pull-to-refresh, retry, agent hint; assign / reassign / escalate / unassign (owner); assignment banner; **`mobile`** **`canUseTenantInboxApi`**, **`superAdminClientId`**, **`_cid(session)`** on inbox REST; typing/reply gated.
+- [x] **Client dashboard (Chat J):** **`ClientDashboardScreen`** → **`GET /dash/client/overview|agents|quality`**; **401** → logout; **404** → mock preview + banner; no new pub deps.
+- [x] **API client (`mobile`):** aligned with `flutter_app` — `listChats` query params, reassign/unassign/escalate, **`dashGet`**.
+- [x] **Docs:** `flutter_app/README.md` + `mobile/README.md` — Chat G section + base URL table (Windows / emulator / device).
+
+---
+
 ## M5 — Billing + KYC + usage
 
 - [ ] India: **`POST /billing/razorpay/create-checkout`** (UPI vs card / plan codes) + pricing keys from control plane.
@@ -129,32 +142,33 @@ Blueprint calls for an **Admin → Control Plane** experience (not only REST). T
 - [ ] **Debounce panel**: seconds, max, adaptive toggles.
 - [ ] **Urgent bypass panel**: keywords + intents arrays (`routing.urgent_*` or aligned keys).
 - [ ] **AI fallback panel**: enable, judge, band, `max_rate_per_client`.
-- [ ] **Client dashboard (Flutter)**: usage, handoffs, missing-data hotspots, agent performance charts.
+- [x] **Client dashboard (Flutter)**: usage, handoffs, missing-data hotspots, agent performance charts — **Chat G v1**: **`ClientDashboardScreen`** wired to **`GET /dash/client/*`** (`401` logout, `404` mock + banner); richer charts TBD.
 - [ ] **Super-admin dashboard (Flutter Android + Windows)**: revenue, collections mix, outbox backlog, number health, geography phase 1 (charts).
 
 ---
 
 ## M9 — SOP / Runbook Center (in-system) — **APIs + interactive product**
 
-**Backend (`ops_api`, Chat I) is landed** — see § **Data & APIs** below. **Interactive SOP / Runbook UI** (library, editor, runs) remains **Chat H**.
+**Backend (`ops_api`, Chat I) is landed** — see § **Data & APIs** below. **Interactive SOP / Runbook UI (Chat H)** is **landed** in **`flutter_app/`** (and **`mobile/`** parity per HANDOFF); remaining checklist items here are **phase-2 auto-trigger**, **day-1 SOP seed content**, and **optional PDF**.
 
 ### Data & APIs
 
 - [x] Migrations: **`ops_sops`**, **`ops_sop_versions`**, **`ops_run_logs`** (+ indexes) — Alembic **`0006_ops_sops`**; FastAPI **`backend/apps/ops_api/`** (Stem: dedicated app, not `client_api`).
 - [x] `GET/POST /ops/sops`, `GET/PUT /ops/sops/{id}` (versioning on update via `ops_sop_versions`).
+- [x] `GET /ops/sops/{sop_id}/versions` — list immutable version bodies for history / diff / restore (**Chat I** `routes_ops.py`; **Chat H** consumes only).
 - [x] `POST /ops/sops/{id}/run` → creates **`ops_run_logs`** row with `context_json`.
 - [x] `GET /ops/runs`, `GET /ops/runs/{run_id}` (filters: `client_id`, `sop_id`, `from_date`, `to_date`, `trigger_type`).
 
-### Interactive SOP / Runbook UI (super-admin) — **required**
+### Interactive SOP / Runbook UI (super-admin) — **shipped (Chat H); phase 2 below**
 
-This is the **dashboard / interactive solution** for SOPs (not a static Markdown file in the repo alone).
+This is the **dashboard / interactive solution** for SOPs (not a static Markdown file in the repo alone). **Auto-trigger** and **day-1 seed content** remain open.
 
-- [ ] **SOP library screen**: list by category, search, status (`active` / `archived`).
-- [ ] **SOP detail**: rendered Markdown **preview** + metadata (owner, version, last updated).
-- [ ] **Editor**: split or tabbed **Markdown editor** with preview; **save** creates new **version** (immutable history).
-- [ ] **Version history**: timeline, **diff** between versions, **restore** prior version (writes new version + audit).
-- [ ] **Run flow**: “Start run” captures **context** (client id, wa number, error codes, links to dead outbox rows, free text) → POST run → show **run id**.
-- [ ] **Run log UI**: searchable table + **run detail** (steps checklist optional; at minimum show context + timestamps + user).
+- [x] **SOP library screen**: list by category, search, status (`active` / `archived`). — **`flutter_app`**: `SuperAdminShell` → SOPs tab → `SopLibraryScreen` (`GET /ops/sops` query params `q`, `category`, `status`).
+- [x] **SOP detail**: rendered Markdown **preview** + metadata (owner, version, last updated). — **`SopDetailScreen`** + `flutter_markdown`.
+- [x] **Editor**: split or tabbed **Markdown editor** with preview; **save** creates new **version** (immutable history). — **`SopEditorScreen`** (POST create / PUT update); preview can be added as a tab later.
+- [x] **Version history**: timeline, **diff** between versions, **restore** prior version (writes new version + audit). — **`GET /ops/sops/{id}/versions`** (Chat I extension) + `SopVersionsScreen` (diff unified/side-by-side; restore opens editor then PUT).
+- [x] **Run flow**: “Start run” captures **context** (client id, wa number, error codes, links to dead outbox rows, free text) → POST run → show **run id**. — **`SopRunStartScreen`** (`POST /ops/sops/{id}/run`).
+- [x] **Run log UI**: searchable table + **run detail** (steps checklist optional; at minimum show context + timestamps + user). — **`SopRunsListScreen`**, **`SopRunDetailScreen`** (`GET /ops/runs`, `GET /ops/runs/{id}`); filters for `sop_id` / `client_id`.
 - [ ] **Auto-trigger wiring** (phase 2): e.g. outbox **DEAD** spike → create run + task + in-app notification + deep link into run detail.
 - [ ] **Day-1 SOP content** seeded or imported: India provisioning, BYON, trial expiry, payment failure, dead-letter recovery, webhook downtime, ban recovery, backup drill, key rotation, release rollback (as blueprint lists).
 
