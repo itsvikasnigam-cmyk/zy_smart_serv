@@ -29,7 +29,47 @@ class _LoginScreenState extends State<LoginScreen> {
     try {
       await session.login(_email.text.trim(), _password.text);
       if (!mounted) return;
+      final u = session.user;
+      if (u == null) return;
+      if (u.isSuperAdmin) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Signed in as super_admin — use the link icon for API bases (client_api + ops_api); SOPs, Runs, Control, Dash.',
+            ),
+          ),
+        );
+        return;
+      }
+      if (u.isOwner) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Signed in as owner — Inbox (assign agents), Dashboard (tenant metrics), Settings.',
+            ),
+          ),
+        );
+      } else if (u.isAgent) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Signed in as agent — Inbox (your queue), Dashboard, Settings. Replies only on assigned chats.',
+            ),
+          ),
+        );
+      }
       await session.connectWebSocket();
+      if (!mounted) return;
+      if (!session.wsConnected && session.wsLastError != null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Inbox works over REST; live updates failed: ${session.wsLastError}',
+            ),
+          ),
+        );
+      }
+      _password.clear();
     } catch (_) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -60,7 +100,15 @@ class _LoginScreenState extends State<LoginScreen> {
                   ),
                   const SizedBox(height: 8),
                   Text(
-                    'Uses client_api (owner, agent, or super_admin).',
+                    'Endpoint: ${session.config.apiBaseUrl}/auth/login',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: Theme.of(context).colorScheme.onSurfaceVariant,
+                        ),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    'Owner or agent: inbox, WebSocket, and read-only client dashboard '
+                    '(`GET /dash/client/*`). Super admin uses Settings + SOP tools.',
                     style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                           color: Theme.of(context).colorScheme.onSurfaceVariant,
                         ),

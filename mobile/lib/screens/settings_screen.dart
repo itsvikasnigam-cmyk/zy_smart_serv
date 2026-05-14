@@ -12,24 +12,6 @@ class SettingsScreen extends StatefulWidget {
 }
 
 class _SettingsScreenState extends State<SettingsScreen> {
-  final _clientId = TextEditingController();
-  bool _seeded = false;
-
-  @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    if (!_seeded) {
-      _seeded = true;
-      _clientId.text = context.read<SessionController>().superAdminClientId ?? '';
-    }
-  }
-
-  @override
-  void dispose() {
-    _clientId.dispose();
-    super.dispose();
-  }
-
   @override
   Widget build(BuildContext context) {
     final session = context.watch<SessionController>();
@@ -55,39 +37,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
             );
           },
         ),
-        if (user.isSuperAdmin) ...[
-          const SizedBox(height: 8),
-          TextField(
-            controller: _clientId,
-            decoration: const InputDecoration(
-              labelText: 'Tenant client_id (UUID)',
-              helperText: 'Required for super_admin REST + WebSocket',
-              border: OutlineInputBorder(),
-            ),
-          ),
-          const SizedBox(height: 8),
-          FilledButton(
-            onPressed: () async {
-              session.setSuperAdminClientId(_clientId.text.trim());
-              session.bumpInboxGeneration();
-              await session.disconnectWebSocket();
-              await session.connectWebSocket();
-              if (context.mounted) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('Saved client scope')),
-                );
-              }
-            },
-            child: const Text('Save client scope'),
-          ),
-        ],
         const Divider(),
         SwitchListTile(
           title: const Text('WebSocket connected'),
           subtitle: Text(
-            session.wsConnected
-                ? 'Receiving hello / message_new / …'
-                : 'Disconnected',
+            session.wsLastError != null && !session.wsConnected
+                ? 'Error: ${session.wsLastError}'
+                : session.wsConnected
+                    ? 'Receiving hello / message_new / …'
+                    : 'Disconnected',
           ),
           value: session.wsConnected,
           onChanged: (v) async {

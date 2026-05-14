@@ -8,6 +8,8 @@ import '../models/chat_models.dart';
 import '../models/user_model.dart';
 import '../state/session_controller.dart';
 
+enum _ChatMenuAction { reassign, unassign, escalateQueue, escalateToAgent }
+
 class ChatDetailScreen extends StatefulWidget {
   const ChatDetailScreen({
     super.key,
@@ -99,18 +101,60 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
     }
   }
 
-  Future<void> _assignToAgent(
+  Future<UserModel?> _pickAgentUser(
+    BuildContext context,
+    SessionController session, {
+    required String title,
+  }) async {
+    final agents = await session.api.listUsers(
+      token: session.token!,
+      user: session.user!,
+      role: 'agent',
+    );
+    if (!context.mounted) return null;
+    if (agents.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No agents in this client.')),
+      );
+      return null;
+    }
+    return showDialog<UserModel>(
+      context: context,
+      builder: (ctx) => SimpleDialog(
+        title: Text(title),
+        children: [
+          for (final a in agents)
+            SimpleDialogOption(
+              onPressed: () => Navigator.pop(ctx, a),
+              child: Text(a.email ?? a.name ?? a.id),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _applyAssignOrReassign(
     BuildContext context,
     SessionController session,
-    UserModel agent,
-  ) async {
+    UserModel agent, {
+    required bool hasActiveAssignment,
+  }) async {
     try {
-      await session.api.postAssign(
-        token: session.token!,
-        user: session.user!,
-        chatId: widget.chatId,
-        assigneeUserId: agent.id,
-      );
+      if (hasActiveAssignment) {
+        await session.api.postReassign(
+          token: session.token!,
+          user: session.user!,
+          chatId: widget.chatId,
+          assigneeUserId: agent.id,
+        );
+      } else {
+        await session.api.postAssign(
+          token: session.token!,
+          user: session.user!,
+          chatId: widget.chatId,
+          assigneeUserId: agent.id,
+        );
+      }
       session.bumpInboxGeneration();
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -127,49 +171,89 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
     }
   }
 
+  Future<void> _unassignChat(BuildContext context, SessionController session) async {
+    try {
+      await session.api.postUnassign(
+        token: session.token!,
+        user: session.user!,
+        chatId: widget.chatId,
+      );
+      session.bumpInboxGeneration();
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Returned chat to queue')),
+        );
+      }
+      if (mounted) setState(() {});
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('$e')),
+        );
+      }
+    }
+  }
+
+  Future<void> _escalateToQueue(BuildContext context, SessionController session) async {
+    try {
+      await session.api.postEscalate(
+        token: session.token!,
+        user: session.user!,
+        chatId: widget.chatId,
+      );
+      session.bumpInboxGeneration();
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Escalated to agent queue')),
+        );
+      }
+      if (mounted) setState(() {});
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('$e')),
+        );
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final session = context.watch<SessionController>();
     final timeFmt = DateFormat.Hm();
-    final canAssign = session.user?.isOwner ?? false;
+    final isOwner = session.user?.isOwner ?? false;
+    final isAgent = session.user?.isAgent ?? false;
 
     return Scaffold(
       appBar: AppBar(
         title: Text(widget.title),
         actions: [
-          if (canAssign)
+          if (isOwner)
             IconButton(
               tooltip: 'Assign to agent',
               icon: const Icon(Icons.group_add_outlined),
               onPressed: () async {
                 try {
-                  final agents = await session.api.listUsers(
-                    token: session.token!,
-                    user: session.user!,
-                    role: 'agent',
-                  );
-                  if (!context.mounted) return;
-                  if (agents.isEmpty) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('No agents in this client.')),
-                    );
-                    return;
-                  }
-                  final chosen = await showDialog<UserModel>(
-                    context: context,
-                    builder: (ctx) => SimpleDialog(
-                      title: const Text('Assign to agent'),
-                      children: [
-                        for (final a in agents)
-                          SimpleDialogOption(
-                            onPressed: () => Navigator.pop(ctx, a),
-                            child: Text(a.email ?? a.name ?? a.id),
-                          ),
-                      ],
-                    ),
+                  final chosen = await _pickAgentUser(
+                    context,
+                    session,
+                    title: 'Assign to agent',
                   );
                   if (chosen != null && context.mounted) {
-                    await _assignToAgent(context, session, chosen);
+                    final d = await session.api.chatDetail(
+                      token: session.token!,
+                      user: session.user!,
+                      chatId: widget.chatId,
+                    );
+                    final has = d.assignment != null &&
+                        d.assignment!['status'] == 'ACTIVE';
+                    if (!context.mounted) return;
+                    await _applyAssignOrReassign(
+                      context,
+                      session,
+                      chosen,
+                      hasActiveAssignment: has,
+                    );
                   }
                 } catch (e) {
                   if (context.mounted) {
@@ -178,6 +262,99 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
                     );
                   }
                 }
+              },
+            ),
+          if (isOwner || isAgent)
+            PopupMenuButton<_ChatMenuAction>(
+              tooltip: 'Chat actions',
+              onSelected: (action) async {
+                switch (action) {
+                  case _ChatMenuAction.reassign:
+                    if (!isOwner) return;
+                    final chosen = await _pickAgentUser(
+                      context,
+                      session,
+                      title: 'Reassign to agent',
+                    );
+                    if (chosen == null || !context.mounted) return;
+                    await _applyAssignOrReassign(
+                      context,
+                      session,
+                      chosen,
+                      hasActiveAssignment: true,
+                    );
+                    return;
+                  case _ChatMenuAction.unassign:
+                    await _unassignChat(context, session);
+                    return;
+                  case _ChatMenuAction.escalateQueue:
+                    await _escalateToQueue(context, session);
+                    return;
+                  case _ChatMenuAction.escalateToAgent:
+                    final chosen = await _pickAgentUser(
+                      context,
+                      session,
+                      title: 'Escalate to agent',
+                    );
+                    if (chosen == null || !context.mounted) return;
+                    try {
+                      await session.api.postEscalate(
+                        token: session.token!,
+                        user: session.user!,
+                        chatId: widget.chatId,
+                        toUserId: chosen.id,
+                        reason: 'escalated',
+                      );
+                      session.bumpInboxGeneration();
+                      if (context.mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text(
+                              'Escalated to ${chosen.email ?? chosen.id}',
+                            ),
+                          ),
+                        );
+                      }
+                      if (mounted) setState(() {});
+                    } catch (e) {
+                      if (context.mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(content: Text('$e')),
+                        );
+                      }
+                    }
+                    return;
+                }
+              },
+              itemBuilder: (ctx) {
+                final entries = <PopupMenuEntry<_ChatMenuAction>>[];
+                if (isOwner) {
+                  entries.add(
+                    const PopupMenuItem(
+                      value: _ChatMenuAction.reassign,
+                      child: Text('Reassign to agent…'),
+                    ),
+                  );
+                }
+                entries.addAll([
+                  const PopupMenuItem(
+                    value: _ChatMenuAction.escalateQueue,
+                    child: Text('Return to agent queue'),
+                  ),
+                  const PopupMenuItem(
+                    value: _ChatMenuAction.escalateToAgent,
+                    child: Text('Escalate to specific agent…'),
+                  ),
+                ]);
+                if (isOwner) {
+                  entries.add(
+                    const PopupMenuItem(
+                      value: _ChatMenuAction.unassign,
+                      child: Text('Unassign (release)'),
+                    ),
+                  );
+                }
+                return entries;
               },
             ),
         ],
@@ -215,7 +392,8 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
                     if (assign != null)
                       MaterialBanner(
                         content: Text(
-                          'Assignment: ${assign['status']} → ${assign['assigned_to_user_id']}',
+                          'Assignment ${assign['status']}: '
+                          'agent ${assign['assigned_to_user_id']}',
                         ),
                         actions: [
                           TextButton(

@@ -29,9 +29,47 @@ class _LoginScreenState extends State<LoginScreen> {
     try {
       await session.login(_email.text.trim(), _password.text);
       if (!mounted) return;
-      if (session.user != null && !session.user!.isSuperAdmin) {
-        await session.connectWebSocket();
+      final u = session.user;
+      if (u == null) return;
+      if (u.isSuperAdmin) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Signed in as super_admin — use the link icon for API URLs, then SOPs / Runs / Dash.',
+            ),
+          ),
+        );
+        return;
       }
+      if (u.isOwner) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Signed in as owner — Inbox (assign agents), Dashboard (tenant metrics), Account.',
+            ),
+          ),
+        );
+      } else if (u.isAgent) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Signed in as agent — Inbox (your queue), Dashboard, Account. Replies only on assigned chats.',
+            ),
+          ),
+        );
+      }
+      await session.connectWebSocket();
+      if (!mounted) return;
+      if (!session.wsConnected && session.wsLastError != null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Inbox works over REST; live updates failed: ${session.wsLastError}',
+            ),
+          ),
+        );
+      }
+      _password.clear();
     } catch (_) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -62,15 +100,16 @@ class _LoginScreenState extends State<LoginScreen> {
                   ),
                   const SizedBox(height: 8),
                   Text(
-                    'POST ${session.config.apiBaseUrl}/auth/login',
+                    'Endpoint: ${session.config.apiBaseUrl}/auth/login',
                     style: Theme.of(context).textTheme.bodySmall?.copyWith(
                           color: Theme.of(context).colorScheme.onSurfaceVariant,
                         ),
                   ),
                   const SizedBox(height: 8),
                   Text(
-                    'Roles: owner and agent use inbox + WebSocket. '
-                    'super_admin opens the control-plane placeholder.',
+                    'Owner or agent: team inbox, live WebSocket updates, and '
+                    'read-only client dashboard (`GET /dash/client/*`). '
+                    'Super admin uses the separate control plane after sign-in.',
                     style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                           color: Theme.of(context).colorScheme.onSurfaceVariant,
                         ),

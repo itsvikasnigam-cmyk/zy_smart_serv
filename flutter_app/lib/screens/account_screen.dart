@@ -36,9 +36,11 @@ class AccountScreen extends StatelessWidget {
         SwitchListTile(
           title: const Text('WebSocket'),
           subtitle: Text(
-            session.wsConnected
-                ? 'Connected to /ws (see recent events below)'
-                : 'Disconnected',
+            session.wsLastError != null && !session.wsConnected
+                ? 'Error: ${session.wsLastError}'
+                : session.wsConnected
+                    ? 'Connected to /ws (see recent events below)'
+                    : 'Disconnected',
           ),
           value: session.wsConnected,
           onChanged: (v) async {

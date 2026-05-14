@@ -22,6 +22,7 @@ from backend.shared.db import db_ping
 
 from .events import hub, poller
 from .routes_auth import router as auth_router
+from .routes_dash import router as dash_router
 from .routes_inbox import router as inbox_router
 from .routes_ws import router as ws_router
 
@@ -38,7 +39,7 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(
     title="ZY Smart Serv - client_api",
     version="0.1.0",
-    description="Inbox, assignments, typing and WS for clients (owner/agent) and super_admin.",
+    description="Inbox, assignments, typing, WS, and read-only dashboard aggregates (owner/agent/super_admin).",
     lifespan=lifespan,
 )
 
@@ -85,4 +86,5 @@ def ws_subscribers() -> dict[str, int]:
 
 app.include_router(auth_router)
 app.include_router(inbox_router)
+app.include_router(dash_router)
 app.include_router(ws_router)

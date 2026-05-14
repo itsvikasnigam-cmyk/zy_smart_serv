@@ -1,69 +1,224 @@
 import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 
 import '../models/chat_models.dart';
 import '../state/session_controller.dart';
 import 'chat_thread_screen.dart';
 
-class InboxChatsScreen extends StatelessWidget {
+enum _InboxFilter { all, mine, unassigned, pendingAgent }
+
+class InboxChatsScreen extends StatefulWidget {
   const InboxChatsScreen({super.key});
+
+  @override
+  State<InboxChatsScreen> createState() => _InboxChatsScreenState();
+}
+
+class _InboxChatsScreenState extends State<InboxChatsScreen> {
+  final _search = TextEditingController();
+  _InboxFilter _filter = _InboxFilter.all;
+
+  @override
+  void dispose() {
+    _search.dispose();
+    super.dispose();
+  }
+
+  String? _assignedParam() {
+    switch (_filter) {
+      case _InboxFilter.all:
+      case _InboxFilter.pendingAgent:
+        return null;
+      case _InboxFilter.mine:
+        return 'me';
+      case _InboxFilter.unassigned:
+        return 'unassigned';
+    }
+  }
+
+  String? _stateParam() {
+    switch (_filter) {
+      case _InboxFilter.pendingAgent:
+        return 'PENDING_AGENT';
+      default:
+        return null;
+    }
+  }
+
+  Future<void> _reloadList(SessionController session) async {
+    session.bumpInboxGeneration();
+  }
+
+  String _activitySubtitle(ChatListItem c) {
+    final t = c.lastCustomerMsgAt ?? c.lastOutboundAt ?? c.createdAt;
+    final rel = DateFormat.MMMd().add_Hm().format(t.toLocal());
+    return '${c.state} · $rel · ${c.lastMessagePreview ?? '—'}';
+  }
 
   @override
   Widget build(BuildContext context) {
     final session = context.watch<SessionController>();
+    final user = session.user;
 
-    if (!session.superAdminReady) {
+    if (!session.canUseTenantInboxApi) {
       return const Center(
-        child: Text('Set client scope in Settings to load chats.'),
+        child: Padding(
+          padding: EdgeInsets.all(16),
+          child: Text(
+            'Super admin: open Settings and set client scope (UUID) to load this tenant inbox.',
+            textAlign: TextAlign.center,
+          ),
+        ),
       );
     }
 
-    return FutureBuilder<List<ChatListItem>>(
-      key: ValueKey<int>(session.inboxGeneration),
-      future: session.api.listChats(
-        token: session.token!,
-        user: session.user!,
-        superClientId: session.superAdminClientId,
-      ),
-      builder: (context, snap) {
-        if (snap.connectionState == ConnectionState.waiting) {
-          return const Center(child: CircularProgressIndicator());
-        }
-        if (snap.hasError) {
-          return Center(child: Text('${snap.error}'));
-        }
-        final items = snap.data ?? const <ChatListItem>[];
-        if (items.isEmpty) {
-          return const Center(child: Text('No chats yet.'));
-        }
-        return ListView.separated(
-          itemCount: items.length,
-          separatorBuilder: (context, index) => const Divider(height: 1),
-          itemBuilder: (context, i) {
-            final c = items[i];
-            return ListTile(
-              leading: _StateDot(state: c.state),
-              title: Text(c.customerPhone),
-              subtitle: Text(
-                '${c.state} · ${c.lastMessagePreview ?? '—'}',
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (user != null && user.isAgent)
+          Material(
+            color: Theme.of(context).colorScheme.surfaceContainerHighest,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              child: Text(
+                'Agent: use the Mine filter for chats assigned to you. '
+                'You can only reply when you are the active assignee.',
+                style: Theme.of(context).textTheme.bodySmall,
               ),
-              trailing: const Icon(Icons.chevron_right),
-              onTap: () {
-                Navigator.of(context).push(
-                  MaterialPageRoute<void>(
-                    builder: (_) => ChatThreadScreen(
-                      chatId: c.id,
-                      title: c.customerPhone,
+            ),
+          ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+          child: TextField(
+            controller: _search,
+            decoration: InputDecoration(
+              hintText: 'Search phone…',
+              border: const OutlineInputBorder(),
+              isDense: true,
+              suffixIcon: IconButton(
+                tooltip: 'Search',
+                icon: const Icon(Icons.search),
+                onPressed: () => setState(() => session.bumpInboxGeneration()),
+              ),
+            ),
+            onSubmitted: (_) => setState(() => session.bumpInboxGeneration()),
+          ),
+        ),
+        SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+          child: Row(
+            children: [
+              FilterChip(
+                label: const Text('All'),
+                selected: _filter == _InboxFilter.all,
+                onSelected: (_) => setState(() => _filter = _InboxFilter.all),
+              ),
+              const SizedBox(width: 6),
+              FilterChip(
+                label: const Text('Mine'),
+                selected: _filter == _InboxFilter.mine,
+                onSelected: (_) => setState(() => _filter = _InboxFilter.mine),
+              ),
+              const SizedBox(width: 6),
+              FilterChip(
+                label: const Text('Unassigned'),
+                selected: _filter == _InboxFilter.unassigned,
+                onSelected: (_) => setState(() => _filter = _InboxFilter.unassigned),
+              ),
+              const SizedBox(width: 6),
+              FilterChip(
+                label: const Text('Needs agent'),
+                selected: _filter == _InboxFilter.pendingAgent,
+                onSelected: (_) =>
+                    setState(() => _filter = _InboxFilter.pendingAgent),
+              ),
+            ],
+          ),
+        ),
+        Expanded(
+          child: FutureBuilder<List<ChatListItem>>(
+            key: ValueKey<int>(session.inboxGeneration),
+            future: session.api.listChats(
+              token: session.token!,
+              user: session.user!,
+              superClientId: session.superAdminClientId,
+              assigned: _assignedParam(),
+              state: _stateParam(),
+              phoneQuery:
+                  _search.text.trim().isEmpty ? null : _search.text.trim(),
+            ),
+            builder: (context, snap) {
+              if (snap.connectionState == ConnectionState.waiting) {
+                return const Center(child: CircularProgressIndicator());
+              }
+              if (snap.hasError) {
+                return Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text('${snap.error}', textAlign: TextAlign.center),
+                        const SizedBox(height: 12),
+                        FilledButton.tonal(
+                          onPressed: () => setState(() {}),
+                          child: const Text('Retry'),
+                        ),
+                      ],
                     ),
                   ),
                 );
-              },
-            );
-          },
-        );
-      },
+              }
+              final items = snap.data ?? const <ChatListItem>[];
+              if (items.isEmpty) {
+                return RefreshIndicator(
+                  onRefresh: () => _reloadList(session),
+                  child: ListView(
+                    physics: const AlwaysScrollableScrollPhysics(),
+                    children: const [
+                      SizedBox(height: 120),
+                      Center(child: Text('No chats match this filter.')),
+                    ],
+                  ),
+                );
+              }
+              return RefreshIndicator(
+                onRefresh: () => _reloadList(session),
+                child: ListView.separated(
+                  physics: const AlwaysScrollableScrollPhysics(),
+                  itemCount: items.length,
+                  separatorBuilder: (context, index) => const Divider(height: 1),
+                  itemBuilder: (context, i) {
+                    final c = items[i];
+                    return ListTile(
+                      leading: _StateDot(state: c.state),
+                      title: Text(c.customerPhone),
+                      subtitle: Text(
+                        _activitySubtitle(c),
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      trailing: const Icon(Icons.chevron_right),
+                      onTap: () {
+                        Navigator.of(context).push(
+                          MaterialPageRoute<void>(
+                            builder: (_) => ChatThreadScreen(
+                              chatId: c.id,
+                              title: c.customerPhone,
+                            ),
+                          ),
+                        );
+                      },
+                    );
+                  },
+                ),
+              );
+            },
+          ),
+        ),
+      ],
     );
   }
 }

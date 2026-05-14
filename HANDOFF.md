@@ -30,8 +30,27 @@ Use this file at the start of **every** Cursor chat (stem or module). Update it 
 - **Flutter (Chat H — SOP Runbook UI)** (`flutter_app/` + **`mobile/`** parity): Super-admin **`SuperAdminShell`** — tabs **SOPs** · **Runs** · **Control** (read-only M8 placeholders) · **Dash** (`GET /dash/admin/*` on **client_api**); dual bases **`CLIENT_API_BASE_URL`** / **`OPS_API_BASE_URL`** (`dart-define` or in-app link sheet, persisted); `lib/screens/sops/*` + auth helpers (`401` → logout, **`403`** → one-shot “needs **super_admin**”, no retry loop); CommonMark-only Markdown preview (`flutter_markdown` + `markdown`); Android emulator hosts **`10.0.2.2:8085`** / **`:8087`**. Root + per-app READMEs document **Flutter web dev CORS** (`CLIENT_API_CORS_ORIGINS` / `OPS_API_CORS_ORIGINS`, exact origin string).
 - **Alembic**: `0001_init_core`, `0002_reliability_queueing`, `0003_wa_trial_map`, `0004_billing`, `0005_usage_metrics`, `0006_ops_sops`; `backend/alembic.ini` uses `%(here)s/migrations`. No migration needed for client_api — schema already has `api_users`, `chat_assignments`, `chat_presence`.
 - **Dev helpers**: `backend/tools/dev_seed.py`, `dev_send_inbound.py`, `dev_check.py`, `dev_seed_users.py` (owner/agent), `dev_inbox_smoke.py` (drives the assign flow + watches WS without Flutter), **`dev_ops_api_smoke.py`** (httpx: `client_api` login → **`ops_api`** CRUD + run against live **8085/8087**; requires a **`super_admin`** user — not added by `dev_seed_users.py`; see stem note below).
-- **Tests + CI**: `tests/` — `pytest` (payloads, billing signatures, AI contract, **ops_api** OpenAPI/RBAC + mocked DB handlers: `tests/test_ops_api_openapi_rbac.py`, `tests/test_ops_api_handlers_mocked_db.py`, optional live gateway when `RUN_WA_GATEWAY_E2E=1`). GitHub Actions **`.github/workflows/ci.yml`** runs **`python -m pytest tests/`** on push/PR to **`main`** / **`master`**.
+- **Tests + CI**: `tests/` — `pytest` (payloads, billing signatures, AI contract, **ops_api** OpenAPI/RBAC + mocked DB handlers: `tests/test_ops_api_openapi_rbac.py`, `tests/test_ops_api_handlers_mocked_db.py`, **Chat K** helper tests `tests/test_usage_thresholds.py`, optional live gateway when `RUN_WA_GATEWAY_E2E=1`). GitHub Actions **`.github/workflows/ci.yml`** runs **`python -m pytest tests/`** on push/PR to **`main`** / **`master`**.
 - **README**: **Copy-paste PowerShell command reference** (blocks A–K), **10-step staging smoke**, **Sequential follow-through** (WhatsApp delivery, quality notes, Flutter, CI), local dev paths.
+
+## Stem sequencing — next module chats (2026-05-14)
+
+**Single migration / shared-contract owner:** Chat **A** approves order before any overlapping Alembic or JWT/API contract edits land together.
+
+| Order | Chat | Rationale |
+|-------|------|-----------|
+| 1 | **N** | Keep **`python -m pytest tests/`** green on every merge; extend smoke docs / contract tests as Stem points; no schema ownership. |
+| 2 | **B** | **M2** inbound trial/entitlement + **outbound paywall** reads (`bill_usage_daily` + `ops_runtime_config.usage.daily_inbound_limits` — Chat **K** already writes); unblock “silent accept” / `PAYWALL` path before batch changes depend on it. |
+| 3 | **C** | **Workers** batch/outbox: A5 pause, HANDOFF/NEEDS_OWNER_DATA alignment with blueprint state names, idempotent Meta sends — coordinate with **B** if enqueue policy and paywall interact. |
+| 4 | **F** | **M3/M4** REST/WS gaps (resolve, `ai_paused_until`, WS hardening) — usually no migration conflict with B if B stays in `wa_gateway` + existing tables. |
+| 5 | **E** | **M5** checkout/subscription read APIs — separate app; merge after or parallel with **F** if no shared migration (Stem resolves if both touch `api_clients`). |
+| 6 | **D** | **M1** external LLM — keep **`POST /ai/respond`** contract stable; land after **C** if batch processor contract tests need to lock first. |
+| 7 | **L** | **M6/M7** broadcast + alerts — needs stable outbox/metrics story (**K** tables exist); coordinate **I** for phase-2 SOP auto-trigger later. |
+| 8 | **M** | **M10** release APIs + CI Postgres job — after pytest baseline is reliable (**N**). |
+
+**Parallel (non-migration):** **Chat H** follow-ups (M8 interactive control plane, super-admin dashboard charts) and **Chat I** ops extensions — no Alembic unless Stem opens a new revision window.
+
+**Device smoke (cannot run inside Cursor agent reliably):** **G** owner/agent + **H** super-admin on **Windows + Android** — **Stem / Chat N / you** on a dev machine: `flutter pub get`, `dart analyze`, then README / HANDOFF smoke paths (`dev_inbox_smoke.py`, optional `dev_ops_api_smoke.py` with a real **`super_admin`** user).
 
 ## Known gaps / next work (pick one module per chat)
 
@@ -42,6 +61,7 @@ Use this file at the start of **every** Cursor chat (stem or module). Update it 
 5. **Flutter**: ~~`flutter_app/` + `mobile/` shells~~ **Chat G landed** (owner/agent inbox + WS + client **`/dash/client/*`**); **Chat H** super-admin SOP landed. Follow-ups: device smoke (Stem/Chat N), deep links, polish.
 6. **M10 Release**: **Basic CI** (pytest only) in `.github/workflows/ci.yml`. Follow-ups: Postgres **service** job + optional `RUN_WA_GATEWAY_E2E`, staging DB, deploy checklist automation.
 7. **M9 (post–Chat I — for Chat A)**: **Interactive SOP UI landed** in **`flutter_app/`** and **`mobile/`** (library/detail/editor/versions+diff+restore/runs vs **`ops_api`**; M8 read-only control plane; Chat J dash reader). **Stem follow-ups:** (a) add **`super_admin`** to dev seed path (today: manual DB row or one-off insert; `dev_ops_api_smoke.py` needs it); (b) optional **Postgres-backed** pytest or CI job for `ops_api` SQL paths; (c) reconcile external blueprint DDL names vs repo if v6.x differs; (d) **`GET /ops/runs` hard cap 500** — raise/paginate if product needs more; (e) ~~**`mobile/`** parity~~ **done** (synced with `flutter_app` Chat H tree; run `flutter pub get` + `dart analyze` + **Windows + Android** smoke locally); (f) phase-2 **auto-trigger** runs + day-1 SOP seed content per checklist.
+8. **Chat K tests**: **`tests/test_usage_thresholds.py`** covers **`usage_metrics_common`** helpers (no DB). **Still open:** optional **integration** pytest (or CI job) for **`usage_increment_worker` / `metrics_rollup_worker`** SQL paths against Postgres — **Chat N** or **K** extension with Stem approval.
 
 ## Stem note — Chat I extras (Chat A analysis)
 
@@ -518,6 +538,7 @@ Constraints: Windows + Postgres + FastAPI; repo root `C:\Users\TV_Station\.curso
 
 ## Last updated
 
+- 2026-05-14 — **Chat A (Stem) — sequencing + verification note**: New **`Stem sequencing — next module chats (2026-05-14)`** (order **N → B → C → F → E → D → L → M** + device smoke assignment); **Known gaps** item **8** (Chat **K**: helper pytest **landed** in `test_usage_thresholds.py`; **Postgres integration** for workers still optional). **Pytest (verified locally, same day):** from repo root with **`$env:PYTHONPATH="$PWD"`** — **`python -m pytest tests/`** → **72 passed**, **1 skipped** (optional gateway E2E), **1** Starlette `multipart` PendingDeprecationWarning — Windows / Python **3.13.12**. **Still run before push:** Flutter **`dart analyze`** + **G/H** device smoke on **Windows + Android**; `git push` if you use a remote.
 - 2026-05-13 — **Chat G handoff (Stem)**: `HANDOFF` “What is implemented” **Flutter owner/agent (Chat G)** bullet; multi-chat row **G landed**; **Chat G** paste heading; **Known gaps** §5; **`docs/BLUEPRINT_IMPLEMENTATION_CHECKLIST.md`** — parallel **§ M4/M8 client UI** row, new **§ Owner/agent Flutter UI (Chat G)** `[x]` block, § M8 **Client dashboard (Flutter)** line ticked for Chat G v1.
 - 2026-05-13 — **Chat A (Stem) — `GET /ops/sops/{id}/versions` policy:** Confirmed **canonical Chat I**; Chat H wrap-up table row updated; checklist § M9 intro + Data & APIs (`POST …/run` line restored) + parallel **§ M9** row; **Chat H** paste heading = landed + device smoke note.
 - 2026-05-13 — **Chat H HANDOFF for stem**: New section **Stem note — Chat H wrap-up (main stem / Chat A)** (M9/M8/Dash scope, `mobile/` parity done, auth/error rules, **`GET …/versions`** = **Stem-confirmed** Chat I contract, smoke = manual on device). **“What is implemented”** Flutter bullet refreshed (four tabs, CORS, both apps). **Known gaps** §7: **`mobile/`** parity marked **done**; stem still owns seed user, CI Postgres, runs pagination, phase-2 auto-trigger, day-1 SOP content.

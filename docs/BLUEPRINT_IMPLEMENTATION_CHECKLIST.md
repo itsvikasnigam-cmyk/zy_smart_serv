@@ -10,7 +10,7 @@ Living checklist vs the **Whatsapp Manager Blueprint** (product definition, arch
 |----------------|--------------------|--------|
 | § M2 gateway | **Chat B** | Chat K supplies usage reads; paywall hook may need B+K merge order via **Chat A** |
 | § Workers (batch/outbox) | **Chat C** | Overlap with checklist A5/HANDOFF/NEEDS_OWNER — Stem assigns C vs coordinated PRs |
-| § Workers (usage/metrics tables + jobs) | **Chat K** — **landed** (`0005_usage_metrics`, `usage_increment_worker.py`, `metrics_rollup_worker.py`) | **Enforcing** paywall / blocking enqueue remains **Chat B** (M2) + **Chat C** (batch) per HANDOFF |
+| § Workers (usage/metrics tables + jobs) | **Chat K** — **landed** (`0005_usage_metrics`, `usage_increment_worker.py`, `metrics_rollup_worker.py`) | **Enforcing** paywall / blocking enqueue remains **Chat B** (M2) + **Chat C** (batch) per HANDOFF. **Tests:** `tests/test_usage_thresholds.py` (no-DB helpers); optional **Postgres integration** for worker SQL paths = **Chat N** / **K** extension (Stem). |
 | § M1 AI | **Chat D** | |
 | § M5 billing + KYC + checkout | **Chat E** | Checkout routes stay **Chat E** (billing_api); **Chat J** is dashboard REST only |
 | § M3 + § M4 REST/WS | **Chat F** | |
@@ -55,6 +55,7 @@ Living checklist vs the **Whatsapp Manager Blueprint** (product definition, arch
 - [ ] **Outbox sender**: retry/backoff, **DEAD** + owner/dashboard signal; idempotent Meta sends on worker crash (**staging E2E**).
 - [x] **Worker: usage + plan gate** (`bill_usage_daily`, soft warn / hard block at thresholds) — **Chat K**: `usage_increment_worker.py` + `ops_runtime_config.usage.daily_inbound_limits`; *blocking* normal AI/outbound when hard cap hit is still **§ M2 outbound paywall / Chat B** (read `bill_usage_daily`).
 - [x] **Worker: metrics rollup** → `metrics_daily_client`, `metrics_daily_agent`, `metrics_hourly_system` (tables + jobs) — **Chat K**: `metrics_rollup_worker.py` + migration `0005_usage_metrics`.
+- [ ] **Optional:** Postgres-backed pytest (or CI job) for **Chat K** worker SQL paths (`usage_increment_worker`, `metrics_rollup_worker`) — helpers only in `tests/test_usage_thresholds.py` today (**Chat N** / **K** + Stem).
 
 ---
 

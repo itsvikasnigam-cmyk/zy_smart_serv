@@ -5,7 +5,10 @@ import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 
 import '../models/chat_models.dart';
+import '../models/user_model.dart';
 import '../state/session_controller.dart';
+
+enum _ChatMenuAction { reassign, unassign, escalateQueue, escalateToAgent }
 
 class ChatThreadScreen extends StatefulWidget {
   const ChatThreadScreen({
@@ -27,6 +30,12 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
   bool _sending = false;
   SessionController? _session;
 
+  String? _cid(SessionController s) {
+    final u = s.user;
+    if (u == null) return null;
+    return u.isSuperAdmin ? s.superAdminClientId : null;
+  }
+
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
@@ -43,7 +52,7 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
 
   Future<void> _sendTypingStopped() async {
     final session = _session;
-    if (session == null || !session.isLoggedIn || !session.superAdminReady) {
+    if (session == null || !session.isLoggedIn || !session.canUseTenantInboxApi) {
       return;
     }
     try {
@@ -52,13 +61,13 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
         user: session.user!,
         chatId: widget.chatId,
         state: 'stopped',
-        superClientId: session.superAdminClientId,
+        superClientId: _cid(session),
       );
     } catch (_) {}
   }
 
   void _onComposerChanged(String text, SessionController session) {
-    if (!session.superAdminReady) return;
+    if (!session.canUseTenantInboxApi) return;
     _typingTimer?.cancel();
     if (text.trim().isEmpty) return;
     _typingTimer = Timer(const Duration(milliseconds: 500), () async {
@@ -69,7 +78,7 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
           chatId: widget.chatId,
           state: 'typing',
           ttlSeconds: 8,
-          superClientId: session.superAdminClientId,
+          superClientId: _cid(session),
         );
       } catch (_) {}
     });
@@ -85,7 +94,7 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
         user: session.user!,
         chatId: widget.chatId,
         text: body,
-        superClientId: session.superAdminClientId,
+        superClientId: _cid(session),
       );
       _composer.clear();
       session.bumpInboxGeneration();
@@ -101,13 +110,271 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
     }
   }
 
+  Future<UserModel?> _pickAgentUser(
+    BuildContext context,
+    SessionController session, {
+    required String title,
+  }) async {
+    final agents = await session.api.listUsers(
+      token: session.token!,
+      user: session.user!,
+      role: 'agent',
+      superClientId: _cid(session),
+    );
+    if (!context.mounted) return null;
+    if (agents.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No agents in this client.')),
+      );
+      return null;
+    }
+    return showDialog<UserModel>(
+      context: context,
+      builder: (ctx) => SimpleDialog(
+        title: Text(title),
+        children: [
+          for (final a in agents)
+            SimpleDialogOption(
+              onPressed: () => Navigator.pop(ctx, a),
+              child: Text(a.email ?? a.name ?? a.id),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _applyAssignOrReassign(
+    BuildContext context,
+    SessionController session,
+    UserModel agent, {
+    required bool hasActiveAssignment,
+  }) async {
+    try {
+      if (hasActiveAssignment) {
+        await session.api.postReassign(
+          token: session.token!,
+          user: session.user!,
+          superClientId: _cid(session),
+          chatId: widget.chatId,
+          assigneeUserId: agent.id,
+        );
+      } else {
+        await session.api.postAssign(
+          token: session.token!,
+          user: session.user!,
+          superClientId: _cid(session),
+          chatId: widget.chatId,
+          assigneeUserId: agent.id,
+        );
+      }
+      session.bumpInboxGeneration();
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Assigned to ${agent.email ?? agent.id}')),
+        );
+      }
+      if (mounted) setState(() {});
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('$e')),
+        );
+      }
+    }
+  }
+
+  Future<void> _unassignChat(BuildContext context, SessionController session) async {
+    try {
+      await session.api.postUnassign(
+        token: session.token!,
+        user: session.user!,
+        superClientId: _cid(session),
+        chatId: widget.chatId,
+      );
+      session.bumpInboxGeneration();
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Returned chat to queue')),
+        );
+      }
+      if (mounted) setState(() {});
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('$e')),
+        );
+      }
+    }
+  }
+
+  Future<void> _escalateToQueue(BuildContext context, SessionController session) async {
+    try {
+      await session.api.postEscalate(
+        token: session.token!,
+        user: session.user!,
+        superClientId: _cid(session),
+        chatId: widget.chatId,
+      );
+      session.bumpInboxGeneration();
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Escalated to agent queue')),
+        );
+      }
+      if (mounted) setState(() {});
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('$e')),
+        );
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final session = context.watch<SessionController>();
     final timeFmt = DateFormat.Hm();
+    final isOwner = session.user?.isOwner ?? false;
+    final isAgent = session.user?.isAgent ?? false;
 
     return Scaffold(
-      appBar: AppBar(title: Text(widget.title)),
+      appBar: AppBar(
+        title: Text(widget.title),
+        actions: [
+          if (isOwner)
+            IconButton(
+              tooltip: 'Assign to agent',
+              icon: const Icon(Icons.group_add_outlined),
+              onPressed: () async {
+                try {
+                  final chosen = await _pickAgentUser(
+                    context,
+                    session,
+                    title: 'Assign to agent',
+                  );
+                  if (chosen != null && context.mounted) {
+                    final d = await session.api.chatDetail(
+                      token: session.token!,
+                      user: session.user!,
+                      superClientId: _cid(session),
+                      chatId: widget.chatId,
+                    );
+                    final has = d.assignment != null &&
+                        d.assignment!['status'] == 'ACTIVE';
+                    if (!context.mounted) return;
+                    await _applyAssignOrReassign(
+                      context,
+                      session,
+                      chosen,
+                      hasActiveAssignment: has,
+                    );
+                  }
+                } catch (e) {
+                  if (context.mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text('$e')),
+                    );
+                  }
+                }
+              },
+            ),
+          if (isOwner || isAgent)
+            PopupMenuButton<_ChatMenuAction>(
+              tooltip: 'Chat actions',
+              onSelected: (action) async {
+                switch (action) {
+                  case _ChatMenuAction.reassign:
+                    if (!isOwner) return;
+                    final chosen = await _pickAgentUser(
+                      context,
+                      session,
+                      title: 'Reassign to agent',
+                    );
+                    if (chosen == null || !context.mounted) return;
+                    await _applyAssignOrReassign(
+                      context,
+                      session,
+                      chosen,
+                      hasActiveAssignment: true,
+                    );
+                    return;
+                  case _ChatMenuAction.unassign:
+                    await _unassignChat(context, session);
+                    return;
+                  case _ChatMenuAction.escalateQueue:
+                    await _escalateToQueue(context, session);
+                    return;
+                  case _ChatMenuAction.escalateToAgent:
+                    final chosen = await _pickAgentUser(
+                      context,
+                      session,
+                      title: 'Escalate to agent',
+                    );
+                    if (chosen == null || !context.mounted) return;
+                    try {
+                      await session.api.postEscalate(
+                        token: session.token!,
+                        user: session.user!,
+                        superClientId: _cid(session),
+                        chatId: widget.chatId,
+                        toUserId: chosen.id,
+                        reason: 'escalated',
+                      );
+                      session.bumpInboxGeneration();
+                      if (context.mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text(
+                              'Escalated to ${chosen.email ?? chosen.id}',
+                            ),
+                          ),
+                        );
+                      }
+                      if (mounted) setState(() {});
+                    } catch (e) {
+                      if (context.mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(content: Text('$e')),
+                        );
+                      }
+                    }
+                    return;
+                }
+              },
+              itemBuilder: (ctx) {
+                final entries = <PopupMenuEntry<_ChatMenuAction>>[];
+                if (isOwner) {
+                  entries.add(
+                    const PopupMenuItem(
+                      value: _ChatMenuAction.reassign,
+                      child: Text('Reassign to agent…'),
+                    ),
+                  );
+                }
+                entries.addAll([
+                  const PopupMenuItem(
+                    value: _ChatMenuAction.escalateQueue,
+                    child: Text('Return to agent queue'),
+                  ),
+                  const PopupMenuItem(
+                    value: _ChatMenuAction.escalateToAgent,
+                    child: Text('Escalate to specific agent…'),
+                  ),
+                ]);
+                if (isOwner) {
+                  entries.add(
+                    const PopupMenuItem(
+                      value: _ChatMenuAction.unassign,
+                      child: Text('Unassign (release)'),
+                    ),
+                  );
+                }
+                return entries;
+              },
+            ),
+        ],
+      ),
       body: Column(
         children: [
           Expanded(
@@ -117,7 +384,7 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
                 token: session.token!,
                 user: session.user!,
                 chatId: widget.chatId,
-                superClientId: session.superAdminClientId,
+                superClientId: _cid(session),
               ),
               builder: (context, snap) {
                 if (snap.connectionState == ConnectionState.waiting) {
@@ -127,6 +394,7 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
                   return Center(child: Text('${snap.error}'));
                 }
                 final detail = snap.data!;
+                final assign = detail.assignment;
                 final rows = <_Row>[];
                 for (final m in detail.pendingOutbound) {
                   rows.add(_Row.pending(m));
@@ -135,46 +403,66 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
                   rows.add(_Row.message(m));
                 }
                 rows.sort((a, b) => a.timestamp.compareTo(b.timestamp));
-                return ListView.builder(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                  itemCount: rows.length,
-                  itemBuilder: (context, i) {
-                    final r = rows[i];
-                    return Align(
-                      alignment: r.outbound
-                          ? Alignment.centerRight
-                          : Alignment.centerLeft,
-                      child: ConstrainedBox(
-                        constraints: BoxConstraints(
-                          maxWidth: MediaQuery.sizeOf(context).width * 0.86,
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    if (assign != null)
+                      MaterialBanner(
+                        content: Text(
+                          'Assignment ${assign['status']}: '
+                          'agent ${assign['assigned_to_user_id']}',
                         ),
-                        child: Card(
-                          color: r.pending
-                              ? Theme.of(context).colorScheme.surfaceContainerHighest
-                              : null,
-                          child: Padding(
-                            padding: const EdgeInsets.all(10),
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  r.title,
-                                  style: Theme.of(context).textTheme.labelMedium,
-                                ),
-                                const SizedBox(height: 4),
-                                SelectableText(r.body),
-                                const SizedBox(height: 4),
-                                Text(
-                                  timeFmt.format(r.timestamp.toLocal()),
-                                  style: Theme.of(context).textTheme.labelSmall,
-                                ),
-                              ],
-                            ),
+                        actions: [
+                          TextButton(
+                            onPressed: () => session.bumpInboxGeneration(),
+                            child: const Text('Refresh'),
                           ),
-                        ),
+                        ],
                       ),
-                    );
-                  },
+                    Expanded(
+                      child: ListView.builder(
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                        itemCount: rows.length,
+                        itemBuilder: (context, i) {
+                          final r = rows[i];
+                          return Align(
+                            alignment: r.outbound
+                                ? Alignment.centerRight
+                                : Alignment.centerLeft,
+                            child: ConstrainedBox(
+                              constraints: BoxConstraints(
+                                maxWidth: MediaQuery.sizeOf(context).width * 0.86,
+                              ),
+                              child: Card(
+                                color: r.pending
+                                    ? Theme.of(context).colorScheme.surfaceContainerHighest
+                                    : null,
+                                child: Padding(
+                                  padding: const EdgeInsets.all(10),
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        r.title,
+                                        style: Theme.of(context).textTheme.labelMedium,
+                                      ),
+                                      const SizedBox(height: 4),
+                                      SelectableText(r.body),
+                                      const SizedBox(height: 4),
+                                      Text(
+                                        timeFmt.format(r.timestamp.toLocal()),
+                                        style: Theme.of(context).textTheme.labelSmall,
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                  ],
                 );
               },
             ),

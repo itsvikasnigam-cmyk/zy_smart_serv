@@ -2,6 +2,8 @@
 
 Backend services (FastAPI) for WhatsApp Gateway, AI engine, Client API, Billing, Dashboards, SOPs.
 
+**Blueprint implementation checklist (living task list):** [docs/BLUEPRINT_IMPLEMENTATION_CHECKLIST.md](docs/BLUEPRINT_IMPLEMENTATION_CHECKLIST.md)
+
 ## Local dev (Phase A/B)
 
 1. Copy environment file.
@@ -197,6 +199,24 @@ $env:DATABASE_URL = "postgresql+psycopg://postgres:postgres@localhost:5432/zysma
 python backend\workers\outbox_sender.py
 ```
 
+**Usage + metrics workers (Chat K)** — after `alembic upgrade head`, keeps `bill_usage_daily` in sync with `inbox_messages` and refreshes rollup tables. Tunables: `USAGE_WORKER_*`, `METRICS_ROLLUP_*` (see `HANDOFF.md` *Usage & metrics workers*).
+
+```powershell
+cd C:\Users\TV_Station\.cursor\projects\empty-window
+.\.venv\Scripts\Activate.ps1
+$env:PYTHONPATH = "$PWD"
+$env:DATABASE_URL = "postgresql+psycopg://postgres:postgres@localhost:5432/zysmart"
+python backend\workers\usage_increment_worker.py
+```
+
+```powershell
+cd C:\Users\TV_Station\.cursor\projects\empty-window
+.\.venv\Scripts\Activate.ps1
+$env:PYTHONPATH = "$PWD"
+$env:DATABASE_URL = "postgresql+psycopg://postgres:postgres@localhost:5432/zysmart"
+python backend\workers\metrics_rollup_worker.py
+```
+
 **client_api 8085**
 
 ```powershell
@@ -377,7 +397,23 @@ VALUES ('razorpay','plan_any','starter','Dev placeholder');
 
 ## Flutter (`flutter_app/`)
 
-Cross-platform shell for **client_api**: `POST /auth/login`, `GET /auth/me`, owner/agent **inbox** (`GET /inbox/chats`, `GET /inbox/chats/{id}`, assign/reply/typing), **WebSocket** `ws://<host>:<port>/ws?token=<JWT>`, and a **super_admin** control-plane placeholder (static copy until a real admin API exists).
+Cross-platform shell for **client_api**: `POST /auth/login`, `GET /auth/me`, owner/agent **inbox** (`GET /inbox/chats`, `GET /inbox/chats/{id}`, assign/reply/typing), **WebSocket** `ws://<host>:<port>/ws?token=<JWT>`, and **super_admin** **SOP / Runbook Center** against **`ops_api`** (same JWT as login).
+
+**Super admin — SOP Center (Chat H)** (after **`ops_api`** on **8087** and migrations **`0006_ops_sops`**):
+
+- Tabs: **SOPs** (library, detail + safe Markdown preview, editor with preview tab, versions/diff/restore), **Runs** (filters: `sop_id`, `client_id`, `trigger_type`, **UTC from/to dates**; server max **500** rows — narrow with dates), **Control** (read-only M8 placeholders: “Stem: needs API”), **Dash** (read-only `GET /dash/admin/*` JSON from **client_api**).
+- **Auth errors**: **401** from `ops_api` → app **logs out** (session invalid). **403** → one clear message (**super_admin** required); **no retry loop**.
+- **Markdown**: preview uses **CommonMark-only** extensions (raw HTML disabled in the widget). Full HTML-in-markdown sanitization remains a **Stem** topic if product needs it.
+- **API bases**: app bar **link** icon — set **`CLIENT_API_BASE_URL`** (8085) and **`OPS_API_BASE_URL`** (8087). Persisted locally next to the existing client_api URL store.
+- **Dart-define** (defaults: `http://127.0.0.1:8085` and `http://127.0.0.1:8087`):
+
+```text
+--dart-define=CLIENT_API_BASE_URL=http://127.0.0.1:8085 --dart-define=OPS_API_BASE_URL=http://127.0.0.1:8087
+```
+
+On **Android emulator**, use **`http://10.0.2.2:8085`** and **`http://10.0.2.2:8087`** for both bases.
+
+**Version history** uses **`GET /ops/sops/{id}/versions`** (immutable bodies); **restore** opens the editor with old Markdown and saves a **new** version via **PUT** (per server contract).
 
 **First time only** (materialize `android/` + `windows/` if missing):
 
@@ -395,13 +431,24 @@ You need this step before `flutter run -d windows` or the Android build; otherwi
 --dart-define=CLIENT_API_BASE_URL=http://127.0.0.1:8085
 ```
 
+**`OPS_API_BASE_URL`** defaults to `http://127.0.0.1:8087` (see super-admin SOP section above).
+
 On the **Android emulator**, the host loopback is `10.0.2.2`, so point the client at `http://10.0.2.2:8085` (dart-define or in-app **API base URL**).
+
+**Flutter Web (dev CORS)**: if the browser blocks calls to `127.0.0.1:8085` / `8087`, set server env to include your web origin, for example:
+
+- `CLIENT_API_CORS_ORIGINS=http://localhost:5555` (match the **exact** origin Chrome shows for `flutter run -d chrome`, including port).
+- `OPS_API_CORS_ORIGINS=http://localhost:5555`
+
+Do **not** use `*` for credentialed browser calls with `Authorization: Bearer`. Production must list explicit HTTPS origins.
+
+**`mobile/` parity**: mirror the same Chat H `lib/` tree and `SessionController` / `ClientApiRepository` / `home_shell` wiring from `flutter_app` into `zy_smart_client`; add `flutter_markdown` and `markdown` to `mobile/pubspec.yaml`, then `flutter pub get`.
 
 **Run — Windows desktop:**
 
 ```powershell
 cd flutter_app
-flutter run -d windows --dart-define=CLIENT_API_BASE_URL=http://127.0.0.1:8085
+flutter run -d windows --dart-define=CLIENT_API_BASE_URL=http://127.0.0.1:8085 --dart-define=OPS_API_BASE_URL=http://127.0.0.1:8087
 ```
 
 **Run — Android emulator** (list devices, then pick the emulator id):
@@ -409,7 +456,7 @@ flutter run -d windows --dart-define=CLIENT_API_BASE_URL=http://127.0.0.1:8085
 ```powershell
 cd flutter_app
 flutter devices
-flutter run -d emulator-5554 --dart-define=CLIENT_API_BASE_URL=http://10.0.2.2:8085
+flutter run -d emulator-5554 --dart-define=CLIENT_API_BASE_URL=http://10.0.2.2:8085 --dart-define=OPS_API_BASE_URL=http://10.0.2.2:8087
 ```
 
 More detail: `flutter_app/README.md`.

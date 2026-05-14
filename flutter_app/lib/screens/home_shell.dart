@@ -3,8 +3,10 @@ import 'package:provider/provider.dart';
 
 import '../state/session_controller.dart';
 import 'account_screen.dart';
+import 'client_dashboard_screen.dart';
 import 'inbox_chats_screen.dart';
-import 'super_admin_control_plane_screen.dart';
+import 'super_admin_api_settings_sheet.dart';
+import 'super_admin_shell.dart';
 
 class HomeShell extends StatefulWidget {
   const HomeShell({super.key});
@@ -23,8 +25,13 @@ class _HomeShellState extends State<HomeShell> {
     if (user.isSuperAdmin) {
       return Scaffold(
         appBar: AppBar(
-          title: const Text('Control plane'),
+          title: const Text('Super admin'),
           actions: [
+            IconButton(
+              tooltip: 'API base URLs',
+              onPressed: () => showSuperAdminApiSettingsSheet(context),
+              icon: const Icon(Icons.link),
+            ),
             IconButton(
               tooltip: 'Log out',
               onPressed: session.logout,
@@ -32,13 +39,14 @@ class _HomeShellState extends State<HomeShell> {
             ),
           ],
         ),
-        body: const SuperAdminControlPlaneScreen(),
+        body: const SuperAdminShell(),
       );
     }
 
-    const pages = [
-      InboxChatsScreen(),
-      AccountScreen(),
+    final pages = <Widget>[
+      const InboxChatsScreen(),
+      ClientDashboardScreen(key: ValueKey(session.dashGeneration)),
+      const AccountScreen(),
     ];
     _index = _index.clamp(0, pages.length - 1);
 
@@ -48,11 +56,20 @@ class _HomeShellState extends State<HomeShell> {
         if (wide) {
           return Scaffold(
             appBar: AppBar(
-              title: Text(_index == 0 ? 'Inbox · ${user.role}' : 'Account'),
+              title: Text(
+                _index == 0
+                    ? 'Inbox · ${user.role}'
+                    : _index == 1
+                        ? 'Dashboard'
+                        : 'Account',
+              ),
               actions: [
                 IconButton(
-                  tooltip: 'Refresh inbox',
-                  onPressed: session.bumpInboxGeneration,
+                  tooltip: 'Refresh inbox & dashboard',
+                  onPressed: () {
+                    session.bumpInboxGeneration();
+                    session.bumpDashGeneration();
+                  },
                   icon: const Icon(Icons.refresh),
                 ),
               ],
@@ -70,6 +87,11 @@ class _HomeShellState extends State<HomeShell> {
                       label: Text('Inbox'),
                     ),
                     NavigationRailDestination(
+                      icon: Icon(Icons.insights_outlined),
+                      selectedIcon: Icon(Icons.insights),
+                      label: Text('Dashboard'),
+                    ),
+                    NavigationRailDestination(
                       icon: Icon(Icons.person_outline),
                       selectedIcon: Icon(Icons.person),
                       label: Text('Account'),
@@ -84,11 +106,20 @@ class _HomeShellState extends State<HomeShell> {
         }
         return Scaffold(
           appBar: AppBar(
-            title: Text(_index == 0 ? 'Inbox · ${user.role}' : 'Account'),
+            title: Text(
+              _index == 0
+                  ? 'Inbox · ${user.role}'
+                  : _index == 1
+                      ? 'Dashboard'
+                      : 'Account',
+            ),
             actions: [
               IconButton(
-                tooltip: 'Refresh inbox',
-                onPressed: session.bumpInboxGeneration,
+                tooltip: 'Refresh inbox & dashboard',
+                onPressed: () {
+                  session.bumpInboxGeneration();
+                  session.bumpDashGeneration();
+                },
                 icon: const Icon(Icons.refresh),
               ),
             ],
@@ -102,6 +133,11 @@ class _HomeShellState extends State<HomeShell> {
                 icon: Icon(Icons.inbox_outlined),
                 selectedIcon: Icon(Icons.inbox),
                 label: 'Inbox',
+              ),
+              NavigationDestination(
+                icon: Icon(Icons.insights_outlined),
+                selectedIcon: Icon(Icons.insights),
+                label: 'Dashboard',
               ),
               NavigationDestination(
                 icon: Icon(Icons.person_outline),

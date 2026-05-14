@@ -48,6 +48,12 @@ class Settings(BaseSettings):
         description="Comma-separated CORS origins for client_api (set explicit origins in non-dev).",
     )
 
+    # ops_api (M9: SOP / Runbook Center — same JWT as client_api)
+    ops_api_cors_origins: str = Field(
+        default="*",
+        description="Comma-separated CORS origins for ops_api (set explicit origins in non-dev).",
+    )
+
     # billing_api (M5: Razorpay + Paddle webhooks)
     billing_razorpay_webhook_secret: str = Field(
         default="",
@@ -56,6 +62,36 @@ class Settings(BaseSettings):
     billing_paddle_webhook_secret: str = Field(
         default="",
         description="Paddle Billing notification destination secret. Required to accept POST /webhooks/paddle.",
+    )
+
+    # Chat K: usage_increment_worker + metrics_rollup_worker (see HANDOFF.md)
+    usage_worker_batch_size: int = Field(
+        default=500,
+        ge=50,
+        le=5000,
+        description="Max inbox_messages rows applied per usage_increment_worker tick.",
+    )
+    usage_worker_sleep_seconds: float = Field(
+        default=2.0,
+        ge=0.5,
+        description="Sleep between usage_increment_worker ticks when caught up or after errors.",
+    )
+    metrics_rollup_sleep_seconds: float = Field(
+        default=300.0,
+        ge=15.0,
+        description="Sleep between metrics_rollup_worker full rollup cycles.",
+    )
+    metrics_rollup_lookback_days: int = Field(
+        default=3,
+        ge=1,
+        le=30,
+        description="UTC calendar days (today .. today-N+1) recomputed each metrics rollup.",
+    )
+    metrics_rollup_hourly_lookback: int = Field(
+        default=48,
+        ge=1,
+        le=168,
+        description="Number of recent UTC hour buckets metrics_hourly_system refreshes each cycle.",
     )
 
 
