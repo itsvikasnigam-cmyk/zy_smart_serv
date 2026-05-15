@@ -196,7 +196,15 @@ class OpsApiRepository {
       _throwForStatus(res);
       throw OpsApiException(res.statusCode, res.body);
     }
-    final list = jsonDecode(res.body) as List<dynamic>;
+    final decoded = jsonDecode(res.body);
+    final List<dynamic> list;
+    if (decoded is Map<String, dynamic> && decoded['items'] is List) {
+      list = decoded['items'] as List<dynamic>;
+    } else if (decoded is List) {
+      list = decoded;
+    } else {
+      throw OpsApiException(res.statusCode, 'unexpected /ops/runs shape');
+    }
     return list.map((e) => RunLog.fromJson(e as Map<String, dynamic>)).toList();
   }
 

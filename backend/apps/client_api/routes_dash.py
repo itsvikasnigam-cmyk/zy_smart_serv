@@ -317,6 +317,17 @@ def dash_admin_overview(_user: AdminDashUser) -> DashAdminOverviewOut:
                 """
             )
         ).fetchone()
+        alerts_24h = int(
+            conn.execute(
+                text(
+                    """
+                    SELECT count(*)::int FROM ops_alert_events
+                    WHERE created_at >= timezone('utc', now()) - interval '24 hours'
+                    """
+                )
+            ).scalar_one()
+            or 0
+        )
 
     clients_by_entitlement = {str(r[0]): int(r[1]) for r in ent_rows if r[0] is not None}
     outbox_by_status = {str(r[0]): int(r[1]) for r in ob_rows}
@@ -339,6 +350,7 @@ def dash_admin_overview(_user: AdminDashUser) -> DashAdminOverviewOut:
         hourly_system_last_24h=hourly_totals,
         hourly_outbox_dead_last_48h=dead_48,
         hourly_outbox_created_last_48h=created_48,
+        ops_alerts_last_24h=alerts_24h,
     )
 
 
@@ -354,6 +366,28 @@ def dash_admin_collections(_user: AdminDashUser) -> DashAdminCollectionsOut:
                 """
             )
         ).all()
+        inv = conn.execute(
+            text(
+                """
+                SELECT COALESCE(SUM(amount_minor), 0)::bigint,
+                       count(*)::int
+                FROM bill_invoices
+                WHERE status IN ('paid', 'completed', 'success')
+                  AND issued_at >= date_trunc('month', timezone('utc', now()))
+                """
+            )
+        ).fetchone()
+        alert_cnt = int(
+            conn.execute(
+                text(
+                    """
+                    SELECT count(*)::int FROM ops_alert_events
+                    WHERE created_at >= timezone('utc', now()) - interval '24 hours'
+                    """
+                )
+            ).scalar_one()
+            or 0
+        )
 
     by_provider: dict[str, int] = {}
     by_status: dict[str, int] = {}
@@ -376,11 +410,18 @@ def dash_admin_collections(_user: AdminDashUser) -> DashAdminCollectionsOut:
         if st and str(st).lower() in active_like:
             active_subscriptions += c
 
+    revenue_mtd = int(inv[0] or 0) if inv else 0
+    invoices_paid_mtd = int(inv[1] or 0) if inv else 0
+
     return DashAdminCollectionsOut(
         active_subscriptions=active_subscriptions,
         by_provider=by_provider,
         by_status=by_status,
-        estimated_mrr_minor_units=0,
+        estimated_mrr_minor_units=revenue_mtd,
+        notes=(
+            f"estimated_mrr_minor_units uses paid invoice sum MTD ({revenue_mtd} minor units, "
+            f"{invoices_paid_mtd} invoices). alerts_24h={alert_cnt}."
+        ),
     )
 
 

@@ -53,7 +53,19 @@ def login(req: LoginRequest) -> LoginResponse:
 
 
 @router.get("/auth/me", response_model=UserOut)
-def me(user: Annotated[CurrentUser, Depends(get_current_user)]) -> UserOut:
+def auth_me(user: Annotated[CurrentUser, Depends(get_current_user)]) -> UserOut:
+    return UserOut(
+        id=user.id,
+        client_id=user.client_id,
+        name=user.name,
+        email=user.email,
+        role=user.role,  # type: ignore[arg-type]
+    )
+
+
+@router.get("/me", response_model=UserOut, include_in_schema=True)
+def me_blueprint_alias(user: Annotated[CurrentUser, Depends(get_current_user)]) -> UserOut:
+    """Blueprint ``GET /me`` — alias of ``GET /auth/me``."""
     return UserOut(
         id=user.id,
         client_id=user.client_id,

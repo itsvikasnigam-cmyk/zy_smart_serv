@@ -256,6 +256,7 @@ def test_dash_admin_overview_handler(
         _ExecResult(all_rows=[("PENDING", 3), ("DEAD", 2)]),
         _ExecResult(fetchone=(1, 2, 3, 0, 0)),
         _ExecResult(fetchone=(5, 9)),
+        _ExecResult(scalar_one=7),
     ]
     monkeypatch.setattr(
         "backend.apps.client_api.routes_dash.engine",
@@ -276,6 +277,7 @@ def test_dash_admin_overview_handler(
             assert b["hourly_system_last_24h"]["customer"] == 1
             assert b["hourly_outbox_dead_last_48h"] == 5
             assert b["hourly_outbox_created_last_48h"] == 9
+            assert b["ops_alerts_last_24h"] == 7
     finally:
         app.dependency_overrides.clear()
 
@@ -293,6 +295,8 @@ def test_dash_admin_collections_handler(
                 ("paddle", "paid", 3),
             ]
         ),
+        _ExecResult(fetchone=(150_000, 4)),
+        _ExecResult(scalar_one=2),
     ]
     monkeypatch.setattr(
         "backend.apps.client_api.routes_dash.engine",
@@ -308,6 +312,8 @@ def test_dash_admin_collections_handler(
             b = r.json()
             assert b["by_provider"] == {"razorpay": 3, "paddle": 3}
             assert b["active_subscriptions"] == 5  # active + paid + paid counts 2+3 for active_like
+            assert b["estimated_mrr_minor_units"] == 150_000
+            assert "alerts_24h=2" in b["notes"]
     finally:
         app.dependency_overrides.clear()
 

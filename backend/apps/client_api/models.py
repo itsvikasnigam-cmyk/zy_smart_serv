@@ -247,6 +247,7 @@ class DashAdminOverviewOut(BaseModel):
     hourly_system_last_24h: DashMessageTotals = Field(default_factory=DashMessageTotals)
     hourly_outbox_dead_last_48h: int = 0
     hourly_outbox_created_last_48h: int = 0
+    ops_alerts_last_24h: int = 0
     placeholder: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -257,7 +258,7 @@ class DashAdminCollectionsOut(BaseModel):
     by_provider: dict[str, int] = Field(default_factory=dict)
     by_status: dict[str, int] = Field(default_factory=dict)
     estimated_mrr_minor_units: int = 0
-    notes: str = "estimated_mrr_minor_units is a stub (0) until pricing + invoice APIs exist."
+    notes: str = ""
 
 
 class DashAdminProviderOut(BaseModel):

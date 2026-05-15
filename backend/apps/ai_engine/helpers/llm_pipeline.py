@@ -26,7 +26,11 @@ def _language_instruction(language: str) -> str:
     if language == "hi":
         return "The customer writes in Hindi (Devanagari). Reply in Hindi, short and polite."
     if language == "en":
-        return "The customer writes in English. Reply in English, short and polite."
+        return (
+            "The customer writes in English or Romanized Hindi (Latin script). "
+            "If they use Hindi words in Latin letters, reply in natural Hinglish; otherwise English. "
+            "Keep it short and polite."
+        )
     return "Match the customer's language (English or Hindi / mixed) in a short, polite reply."
 
 

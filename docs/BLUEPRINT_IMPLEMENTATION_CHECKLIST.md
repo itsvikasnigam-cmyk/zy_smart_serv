@@ -76,9 +76,9 @@ Living checklist vs the **Whatsapp Manager Blueprint** (product definition, arch
 ### Still open (blueprint remainder)
 
 - [x] **Input context (server-side):** recent inbox messages + business name/category loaded in **`ai_engine`** for LLM prompts (five-field **`batch_processor`** POST unchanged). Catalog/rules remain future when **§ M3** catalog exists.
-- [ ] **Multilingual** nuance: Romanized Hindi-only messages still tagged **`en`** (prompt asks model to match customer); richer locale detection if product requires.
+- [x] **Multilingual** nuance: Romanized Hindi in Latin script — **`language`** may stay **`en`**; LLM prompt matches Hinglish when appropriate (**`llm_pipeline`**).
 - [x] **Cost controls beyond token caps:** per-client daily LLM call ceiling via **`ai.fallback.max_calls_per_client_per_day`** + **`ai_llm_daily_usage`** table (**migration `0011`**).
-- [ ] Optional: **OpenAPI** snapshot / CI contract test for **`/ai/respond`** (**Chat N**).
+- [x] Optional: **OpenAPI** contract test — **`tests/test_ai_respond_openapi_contract.py`**.
 
 ---
 
@@ -88,7 +88,7 @@ Living checklist vs the **Whatsapp Manager Blueprint** (product definition, arch
 
 - [ ] `POST /signup` (trial, `trial_end`, default personas).
 - [ ] OTP auth (`POST /auth/otp/start`, `POST /auth/otp/verify`) if product requires it (else document “email/password only” deviation).
-- [ ] `GET /me` — align path with blueprint (`GET /me` vs `/auth/me`) or document mapping.
+- [x] `GET /me` — blueprint alias of **`GET /auth/me`** on **`client_api`**.
 - [ ] Team: `POST/GET /team/users`, `PUT /team/users/{id}`, `PUT /team/agents/{id}/profile` (**`agent_profiles`** backed).
 - [ ] Client: `PUT /client/profile`, `PUT /client/persona`.
 - [ ] Catalog: `POST/GET/PUT/DELETE /catalog/items`, optional `POST /catalog/import` (CSV).
@@ -144,7 +144,7 @@ Shipped **without** claiming full blueprint **§ M4** product completeness (back
 - [x] **KYC verification** (India): super-admin **`POST /billing/kyc/india/{client_id}/review`** (`verified` \| `rejected`). Notifications UI still open.
 - [ ] **Checkout UX / control plane:** surface UPI vs card, plan picker, **`bill_plans` + `ops_runtime_config`** pricing keys (not only pass-through provider create payloads).
 - [ ] **Webhooks:** chargebacks / disputes / additional Paddle adjustment types if product requires.
-- [ ] **`GET /dash/admin/*` billing tiles:** revenue / MRR-style aggregates sourced from **`bill_invoices`** / subscriptions (**Chat J**, still read-only SQL).
+- [x] **`GET /dash/admin/*` billing tiles:** **`/dash/admin/collections`** — MTD paid **`bill_invoices`** sum → **`estimated_mrr_minor_units`**; **`/dash/admin/overview`** — **`ops_alerts_last_24h`**.
 
 ---
 
@@ -159,7 +159,7 @@ Shipped **without** claiming full blueprint **§ M4** product completeness (back
 
 ### Still open (blueprint remainder)
 
-- [ ] Owner/tenant REST + UI to manage opt-in, approved templates, and campaign lifecycle (this slice is **worker + schema + gates** only).
+- [x] Owner/tenant **REST** for opt-in + campaign queue (**`routes_broadcast.py`**: **`PUT/GET /broadcast/opt-in`**, **`POST/GET /broadcast/campaigns`**). **Still open:** Flutter campaign UI.
 
 ---
 
@@ -175,7 +175,7 @@ Shipped **without** claiming full blueprint **§ M4** product completeness (back
 ### Still open (blueprint remainder)
 
 - [x] **Alert REST (read):** **`GET /ops/alerts`** with cursor pagination (**`ops_api`**). **Still open:** pager/Slack; **`/dash/admin`** alert tiles; ban/GPU/SLA hooks.
-- [ ] **M9 phase-2:** auto-open SOP runs from alert types — **`POST /ops/sops/{id}/run`** with `trigger_type=auto` (**coordinate Chat I**; consume **`ops_alert_events`** or a mapped view).
+- [x] **M9 phase-2:** auto-open SOP runs from alert types — **`alert_eval_worker`** + **`maybe_create_auto_sop_run`** (see § M9 Still open for UI deep links).
 
 ---
 
@@ -242,8 +242,8 @@ This is the **dashboard / interactive solution** for SOPs (not a static Markdown
 - [x] **Version history**: timeline, **diff** between versions, **restore** prior version (writes new version + audit). — **`GET /ops/sops/{id}/versions`** (Chat I extension) + `SopVersionsScreen` (diff unified/side-by-side; restore opens editor then PUT).
 - [x] **Run flow**: “Start run” captures **context** (client id, wa number, error codes, links to dead outbox rows, free text) → POST run → show **run id**. — **`SopRunStartScreen`** (`POST /ops/sops/{id}/run`).
 - [x] **Run log UI**: searchable table + **run detail** (steps checklist optional; at minimum show context + timestamps + user). — **`SopRunsListScreen`**, **`SopRunDetailScreen`** (`GET /ops/runs`, `GET /ops/runs/{id}`); filters for `sop_id` / `client_id`.
-- [ ] **Auto-trigger wiring** (phase 2): e.g. outbox **DEAD** spike → create run + task + in-app notification + deep link into run detail. **Surface:** consume **`ops_alert_events`** (Chat **L**) + mapped SOP slug (**`alerts.sop_trigger_map`** TBD) → **`POST /ops/sops/{id}/run`** (**Chat I** contract); Stem sequences schema/API if `context_json` needs standard keys. **Detail:** see **§ M9 — Still open (ops_api)** → **Auto-trigger API hooks** (same workstream).
-- [ ] **Day-1 SOP content** seeded or imported: India provisioning, BYON, trial expiry, payment failure, dead-letter recovery, webhook downtime, ban recovery, backup drill, key rotation, release rollback (as blueprint lists).
+- [ ] **Auto-trigger wiring** (phase 2 — **UI**): in-app notification + deep link into run detail when auto-run created. **Backend:** **`maybe_create_auto_sop_run`** landed.
+- [x] **Day-1 SOP content** seeded — migration **`0012_day1_sop_seed`** (10 slugs incl. **`dead-letter-recovery`**, **`webhook-downtime`**, …).
 
 ### Optional
 
@@ -259,14 +259,14 @@ This is the **dashboard / interactive solution** for SOPs (not a static Markdown
 
 - [x] **`GET/POST /ops/releases*`** + **`POST /ops/releases/{id}/promote`** under **`ops_api`** (**migration `0011`** **`ops_releases`**).
 - [x] **CI (`.github/workflows/ci.yml`):** **`pytest-postgres`** job — **`alembic upgrade head`** + **`RUN_POSTGRES_INTEGRATION=1`**. **Still open:** contract job matrix; optional **`RUN_WA_GATEWAY_E2E`** job.
-- [ ] **Manual approval hooks** documented in **README** + **HANDOFF**: changes under **`backend/apps/ai_engine/`**, **`wa_gateway/`** (routing / paywall / debounce), and **`billing_api/`** (webhooks, checkout, plan-affecting paths) require **human review** before prod — e.g. GitHub **Environments** (`production`) with **required reviewers**, **CODEOWNERS** on those paths, and/or **branch protection**; Stem picks which levers the org uses.
+- [x] **Manual approval hooks** documented in **README** § Release / CI (GitHub Environments / CODEOWNERS / branch protection — org configures).
 
 ---
 
 ## Cross-cutting
 
 - [x] **`ZY_BASE_DIR`** (or equivalent): **`backend/shared/path_layout.py`** + **`settings.zy_base_dir`** / env (blueprint §10).
-- [ ] **Acceptance tests** in repo: debounce **A1–A5**, urgent **U1–U2**, NEEDS_OWNER fixed string, burst → single reply E2E.
+- [x] **Acceptance tests** (unit-level): **`tests/test_acceptance_blueprint.py`** — **U2**, NEEDS_OWNER fixed string, human HANDOFF. **Still open:** full debounce **A1–A5** + burst→single reply **E2E** with Meta.
 - [ ] Staging environment mirrors prod behavior (numbers + payment sandboxes).
 
 ---
