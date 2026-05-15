@@ -6,6 +6,8 @@ from __future__ import annotations
 * ``/dash/admin/*`` — ``super_admin`` only (system-wide aggregates).
 
 Aggregates read existing tables; metrics rollups may be empty until workers run.
+**Billing:** subscription tier and provider truth live in ``billing_api`` + core tables
+(``api_clients``, ``bill_subscriptions``, ``bill_invoices``); these routes do **not** call Razorpay/Paddle.
 """
 
 from typing import Annotated
@@ -218,7 +220,7 @@ def dash_client_quality(client_id: ScopedClientId) -> DashClientQualityOut:
                 SELECT count(*)::int
                 FROM inbox_chats
                 WHERE client_id = CAST(:cid AS uuid)
-                  AND state = 'PENDING_AGENT'
+                  AND state IN ('HUMAN_REQ', 'WAITING_OWNER_DATA')
                 """
             ),
             {"cid": client_id},

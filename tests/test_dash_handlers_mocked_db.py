@@ -101,7 +101,7 @@ def test_dash_client_overview_handler_assembles_response(
     assert cid is not None
     queue: list[_ExecResult] = [
         _ExecResult(fetchone=("Acme", "trial", "razorpay", None)),
-        _ExecResult(all_rows=[("AI_ACTIVE", 3), ("PENDING_AGENT", 1)]),
+        _ExecResult(all_rows=[("AI_ACTIVE", 3), ("HUMAN_REQ", 1)]),
         _ExecResult(scalar_one=2),
         _ExecResult(fetchone=(date(2026, 5, 13), 10, 4, 1, 0, None, None)),
         _ExecResult(fetchone=(100, 20, 5, 2)),
@@ -122,7 +122,7 @@ def test_dash_client_overview_handler_assembles_response(
             body = r.json()
             assert body["client_id"] == cid
             assert body["business_name"] == "Acme"
-            assert body["chats_by_state"] == {"AI_ACTIVE": 3, "PENDING_AGENT": 1}
+            assert body["chats_by_state"] == {"AI_ACTIVE": 3, "HUMAN_REQ": 1}
             assert body["wa_numbers_count"] == 2
             assert body["usage_today"]["inbound_customer_messages"] == 10
             assert body["messages_last_7d"]["customer"] == 100

@@ -1,0 +1,12 @@
+{
+  "description": "Explicit human request → HANDOFF",
+  "batch_text": "I need to speak to a human about my order",
+  "urgent_bypass_substrings": [],
+  "expected": {
+    "action": "HANDOFF",
+    "intent": "human_request",
+    "routing_intent": "human_request",
+    "language": "en",
+    "handoff_reason": "customer_requested_human"
+  }
+}

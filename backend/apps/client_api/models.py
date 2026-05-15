@@ -12,8 +12,14 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-ChatState = Literal["AI_ACTIVE", "PENDING_AGENT", "AGENT_ACTIVE", "RESOLVED"]
-LEGAL_CHAT_STATES: tuple[str, ...] = ("AI_ACTIVE", "PENDING_AGENT", "AGENT_ACTIVE", "RESOLVED")
+ChatState = Literal["AI_ACTIVE", "HUMAN_REQ", "AGENT_ACTIVE", "CLOSED", "WAITING_OWNER_DATA"]
+LEGAL_CHAT_STATES: tuple[str, ...] = (
+    "AI_ACTIVE",
+    "HUMAN_REQ",
+    "AGENT_ACTIVE",
+    "CLOSED",
+    "WAITING_OWNER_DATA",
+)
 
 Role = Literal["owner", "agent", "super_admin"]
 
@@ -77,6 +83,7 @@ class ChatListItem(BaseModel):
     last_outbound_at: datetime | None
     created_at: datetime
     last_message_preview: str | None = None
+    ai_paused_until: datetime | None = None
 
 
 class ChatList(BaseModel):
@@ -115,6 +122,27 @@ class ReplyRequest(_Forbid):
     text: str = Field(min_length=1, max_length=4096)
 
 
+class ResolveRequest(_Forbid):
+    reason: str | None = None
+
+
+class NotificationOut(BaseModel):
+    id: str
+    client_id: str
+    recipient_user_id: str
+    chat_id: str | None
+    kind: str
+    title: str
+    body: str | None
+    payload: dict[str, Any] = Field(default_factory=dict)
+    read_at: datetime | None
+    created_at: datetime
+
+
+class NotificationList(BaseModel):
+    items: list[NotificationOut]
+
+
 class ReplyResponse(BaseModel):
     message: MessageOut
     outbox_id: str
@@ -130,6 +158,7 @@ class WSEnvelope(BaseModel):
         "assignment_changed",
         "typing",
         "chat_state_changed",
+        "notification",
         "hello",
         "error",
     ]
@@ -192,7 +221,13 @@ class DashClientAgentsOut(BaseModel):
 
 class DashClientQualityOut(BaseModel):
     client_id: str
-    chats_pending_agent: int = 0
+    chats_pending_agent: int = Field(
+        0,
+        description=(
+            "Count of chats needing human attention: ``HUMAN_REQ`` or ``WAITING_OWNER_DATA`` "
+            "(legacy name kept for API stability)."
+        ),
+    )
     chats_with_handoff_reason_7d: int = 0
     median_first_response_seconds: float | None = None
     csat_placeholder: float | None = None

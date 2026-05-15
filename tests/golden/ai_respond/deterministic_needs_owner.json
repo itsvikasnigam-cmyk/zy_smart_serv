@@ -1,0 +1,11 @@
+{
+  "description": "Owner-only marker → NEEDS_OWNER_DATA",
+  "batch_text": "Please send me the invoice for last month",
+  "urgent_bypass_substrings": [],
+  "expected": {
+    "action": "NEEDS_OWNER_DATA",
+    "intent": "owner_only_information",
+    "routing_intent": "owner_data",
+    "language": "en"
+  }
+}

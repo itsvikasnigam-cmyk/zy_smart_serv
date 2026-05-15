@@ -41,6 +41,25 @@ python -m pytest tests/test_gateway_e2e_optional.py -v
 
 Docker-based Postgres (`testcontainers`) is not wired in this repo yet; use the optional env vars above or the manual checklist below.
 
+### Optional Postgres integration (Chat N — Chat K workers + schema sanity)
+
+Requires **migrations at head** on the database pointed to by `DATABASE_URL`. Prefer a **local disposable** `zysmart` (or equivalent) rather than shared staging: the usage test **temporarily advances** `worker_usage_cursors` to the latest `inbox_messages` row, then **restores** the original cursor after cleanup.
+
+**Credentials:** use the same `DATABASE_URL` that already works for `alembic upgrade head` (README examples often use `postgres` / `postgres`; your install may differ — `FATAL: password authentication failed` means fix the URL, not the tests).
+
+`tests/conftest.py` **omits** this module from the default `python -m pytest tests/` collection unless both `RUN_POSTGRES_INTEGRATION=1` and `DATABASE_URL` are set, so CI and quick local runs do not pick up extra skipped tests.
+
+```powershell
+cd C:\Users\TV_Station\.cursor\projects\empty-window
+.\.venv\Scripts\Activate.ps1
+$env:PYTHONPATH = "$PWD"
+$env:DATABASE_URL = "postgresql+psycopg://postgres:postgres@localhost:5432/zysmart"
+$env:RUN_POSTGRES_INTEGRATION = "1"
+python -m pytest tests\test_postgres_integration_optional.py -v
+```
+
+Env: **`RUN_POSTGRES_INTEGRATION`** — set to `1` together with **`DATABASE_URL`** so `tests/conftest.py` collects `tests/test_postgres_integration_optional.py` (default off so CI stays pytest-only without a Postgres service).
+
 ## Copy-paste command reference (PowerShell, repo root)
 
 Use **`C:\Users\TV_Station\.cursor\projects\empty-window`** (or your clone path) as the repo root. **Every** command below assumes you already ran:
@@ -267,6 +286,8 @@ python backend\tools\dev_inbox_smoke.py --listen-seconds 6
 | 8 Persistence | **G)** last line (`dev_check`) |
 | 9 Workers | **I)** AI + batch (+ outbox if needed) |
 | 10 client_api | **I)** client_api + **J)** |
+| (Optional) Postgres integration pytest | README subsection *Optional Postgres integration* + same `DATABASE_URL` / `PYTHONPATH` as **C)** |
+| (Optional) Flutter `dart analyze` + G/H device smoke | README *Flutter / Chat N — device smoke* |
 
 ## Non-dev / staging smoke checklist (10 steps)
 
@@ -284,6 +305,12 @@ Use this after a deploy or before a demo when you want a repeatable pass/fail se
 8. **Persistence check**: Run `python backend/tools/dev_check.py` (or SQL) and confirm a new `inbox_messages` row (and chat/batch activity) for that customer/meta message id.
 9. **Downstream workers (if enabled)**: With AI engine and `batch_processor` running, wait for debounce window then confirm no unhandled errors in worker logs; if `outbox_sender` and Meta token are enabled, confirm outbound status path with a test send when safe.
 10. **Client API slice (if in scope)**: `GET /ready`-style checks for `client_api`, login with a seeded owner, open inbox list for the client, and confirm the new chat appears after step 7.
+
+### Optional extensions (same session; not numbered above)
+
+- **Chat K workers:** start `usage_increment_worker` and/or `metrics_rollup_worker` (README block **I)**) and confirm `bill_usage_daily` / `metrics_*` update after inbound traffic, or run **Optional Postgres integration** pytest when `RUN_POSTGRES_INTEGRATION=1`.
+- **ops_api (M9):** README *Client API* → **ops_api (M9) smoke** (`dev_seed_users.py --super-admin-email` + `dev_ops_api_smoke.py`).
+- **Flutter (Chat G + Chat H):** run **`dart analyze`** and the **device smoke** checklist below on **Windows** and **Android** before merge when UI changed.
 
 ## Non-dev local smoke test (quick path)
 
@@ -323,19 +350,22 @@ Endpoints (base `http://127.0.0.1:8085`):
 - `POST /auth/login` — `{ email, password }` → `{ access_token, expires_at, user }`
 - `GET  /auth/me`
 - `GET  /users?role=agent` — list users in the caller's client
-- `GET  /inbox/chats?state=&assigned=me|unassigned|<user_id>&q=&limit=` — list
-- `GET  /inbox/chats/{chat_id}` — detail (messages from `inbox_messages` UNION outbound `wa_outbox` rows; plus `pending_outbound` for transparency)
+- `GET  /inbox/chats?state=&human_queue=true&assigned=me|unassigned|<user_id>&q=&limit=` — list (`human_queue` = needs-human: `HUMAN_REQ` + `WAITING_OWNER_DATA`; legacy `state=PENDING_AGENT` is accepted as a filter alias for `HUMAN_REQ`)
+- `GET  /inbox/chats/{chat_id}` — detail (includes `ai_paused_until`; messages from `inbox_messages` UNION outbound `wa_outbox` rows; plus `pending_outbound` for transparency)
 - `POST /inbox/chats/{chat_id}/assign` — `{ user_id, reason?, note? }` (owner / super_admin)
 - `POST /inbox/chats/{chat_id}/reassign` — same body; ends any ACTIVE assignment first
-- `POST /inbox/chats/{chat_id}/unassign` — `{ reason? }` (agent may only unassign their own chat)
-- `POST /inbox/chats/{chat_id}/escalate` — `{ to_user_id?, reason? }` (assigns when `to_user_id` set, else sets state=`PENDING_AGENT`)
+- `POST /inbox/chats/{chat_id}/unassign` — `{ reason? }` (agent may only unassign their own chat; sets state `HUMAN_REQ` when released)
+- `POST /inbox/chats/{chat_id}/escalate` — `{ to_user_id?, reason? }` (assigns when `to_user_id` set, else sets state=`HUMAN_REQ`)
+- `POST /inbox/chats/{chat_id}/resolve` — `{ reason? }` (owner / super_admin; sets `CLOSED`, ends ACTIVE assignment as `RESOLVED`)
 - `POST /inbox/chats/{chat_id}/typing` — `{ state: "typing"|"stopped", ttl_seconds?: 5 }`
-- `POST /inbox/chats/{chat_id}/reply` — `{ text }` (owner/agent/super_admin; agents must own the chat)
+- `POST /inbox/chats/{chat_id}/reply` — `{ text }` (owner/agent/super_admin; agents must own the chat; extends `ai_paused_until` per `ops_runtime_config`)
+- `GET  /inbox/notifications?unread_only=&limit=` — in-app notifications for the signed-in user
+- `POST /inbox/notifications/{id}/read` — mark read (idempotent)
 
-WebSocket: `ws://127.0.0.1:8085/ws?token=<JWT>` (super_admin must also pass `&client_id=`). Server pushes:
+WebSocket: `ws://127.0.0.1:8085/ws?token=<JWT>` (super_admin must also pass `&client_id=`). In production use **WSS**, short-lived JWTs, and set **`CLIENT_API_WS_ALLOWED_ORIGINS`** to an explicit comma-separated allowlist (exact `Origin` match). Server pushes:
 
 ```
-{ "event": "hello" | "message_new" | "assignment_changed" | "typing" | "chat_state_changed", "data": {...}, "ts": "<iso>" }
+{ "event": "hello" | "message_new" | "assignment_changed" | "typing" | "chat_state_changed" | "notification", "data": {...}, "ts": "<iso>" }
 ```
 
 Run it:
@@ -352,6 +382,13 @@ python backend/tools/dev_seed_users.py --client-id <CLIENT_ID>
 python backend/tools/dev_inbox_smoke.py --listen-seconds 6
 ```
 
+**ops_api (M9) smoke** — after `alembic upgrade head`, start **client_api** (8085) and **ops_api** (8087) with the same `CLIENT_API_JWT_SECRET`. Seed a `super_admin` on your dev client, then run the httpx script:
+
+```powershell
+python backend/tools/dev_seed_users.py --client-id <CLIENT_ID> --super-admin-email admin@example.com --super-admin-password Admin!2026
+python backend/tools/dev_ops_api_smoke.py --email admin@example.com --password Admin!2026
+```
+
 ## Billing (M5)
 
 **App:** `backend/apps/billing_api/main.py` — run on **port 8086** (see HANDOFF *Billing (M5 layout)*). Webhook endpoints:
@@ -359,7 +396,17 @@ python backend/tools/dev_inbox_smoke.py --listen-seconds 6
 - `POST http://127.0.0.1:8086/webhooks/razorpay` — header `X-Razorpay-Signature` (hex HMAC-SHA256 of the raw JSON body using `BILLING_RAZORPAY_WEBHOOK_SECRET`).
 - `POST http://127.0.0.1:8086/webhooks/paddle` — header `Paddle-Signature` (`ts=...;h1=...` per Paddle Billing notification signing, secret `BILLING_PADDLE_WEBHOOK_SECRET`).
 
-**Prereq:** migrate DB (`0004_billing`), set webhook secrets in `backend/.env` or `$env:` (see `backend/.env.example`). Subscription payloads must carry your `api_clients.id` as a UUID string: Razorpay `payload.payload.subscription.entity.notes.client_id`; Paddle `data.custom_data.client_id`. Replaying the same provider event id returns `{"status":"duplicate"}` (no double update).
+**Prereq:** migrate DB through **`0009_billing_kyc_invoices`** (includes **`bill_invoices`** + **`api_clients`** KYC columns). Set webhook + API secrets in `backend/.env` or `$env:` (see `backend/.env.example`). Subscription payloads must carry your `api_clients.id` as a UUID string: Razorpay `payload.payload.subscription.entity.notes.client_id`; Paddle `data.custom_data.client_id`. Replaying the same provider event id returns `{"status":"duplicate"}` (no double update).
+
+**REST (JWT from `client_api` login — same `CLIENT_API_JWT_SECRET`):**
+
+- `GET http://127.0.0.1:8086/billing/subscription` — `Authorization: Bearer <token>`; optional `?client_id=` for `super_admin`.
+- `GET http://127.0.0.1:8086/billing/invoices?limit=50`
+- `POST http://127.0.0.1:8086/billing/razorpay/create-checkout` — JSON `{"amount_paise":10000,"currency":"INR","notes":{}}` (requires **`BILLING_RAZORPAY_KEY_ID`** / **`BILLING_RAZORPAY_KEY_SECRET`**).
+- `POST http://127.0.0.1:8086/billing/paddle/create-checkout` — JSON `{"items":[{"price_id":"pri_...","quantity":1}],"custom_data":{}}` (requires **`BILLING_PADDLE_API_KEY`**; **`BILLING_PADDLE_ENVIRONMENT=sandbox`** or `production`).
+- `POST http://127.0.0.1:8086/billing/kyc/india` — JSON `{"data":{"legal_name":"...","pan":"..."}}` (stores `kyc_india_json`); response **`200`** + `{"ok": true}`.
+
+**`GET /dash/*` (Chat J)** remains read-only analytics on **client_api**; billing writes and subscription truth stay **billing_api + Postgres** (see `routes_dash.py` module docstring).
 
 **Razorpay sandbox — compute signature and POST (PowerShell):**
 
@@ -401,7 +448,7 @@ Cross-platform shell for **client_api**: `POST /auth/login`, `GET /auth/me`, own
 
 **Super admin — SOP Center (Chat H)** (after **`ops_api`** on **8087** and migrations **`0006_ops_sops`**):
 
-- Tabs: **SOPs** (library, detail + safe Markdown preview, editor with preview tab, versions/diff/restore), **Runs** (filters: `sop_id`, `client_id`, `trigger_type`, **UTC from/to dates**; server max **500** rows — narrow with dates), **Control** (read-only M8 placeholders: “Stem: needs API”), **Dash** (read-only `GET /dash/admin/*` JSON from **client_api**).
+- Tabs: **SOPs** (library, detail + safe Markdown preview, editor with preview tab, versions/diff/restore), **Runs** (filters: `sop_id`, `client_id`, `trigger_type`, **UTC from/to dates**; server max **500** rows — narrow with dates), **Control** (read-only M8 checklist: backend prerequisites per panel), **Dash** (`GET /dash/admin/*`: KPI chips + bar charts + message rollup + raw JSON).
 - **Auth errors**: **401** from `ops_api` → app **logs out** (session invalid). **403** → one clear message (**super_admin** required); **no retry loop**.
 - **Markdown**: preview uses **CommonMark-only** extensions (raw HTML disabled in the widget). Full HTML-in-markdown sanitization remains a **Stem** topic if product needs it.
 - **API bases**: app bar **link** icon — set **`CLIENT_API_BASE_URL`** (8085) and **`OPS_API_BASE_URL`** (8087). Persisted locally next to the existing client_api URL store.
@@ -461,6 +508,17 @@ flutter run -d emulator-5554 --dart-define=CLIENT_API_BASE_URL=http://10.0.2.2:8
 
 More detail: `flutter_app/README.md`.
 
+### Flutter / Chat N — `dart analyze` and device smoke (Chat G + Chat H)
+
+Run on a **developer machine** (not assumed to pass inside agent sandboxes). Repeat for **`flutter_app/`** and, when you ship `mobile/` parity, **`mobile/`** (`zy_smart_client`).
+
+1. **`flutter pub get`** in the project directory you are validating.
+2. **`dart analyze`** — exit code must be **0** (fix or file a Stem ticket before merge if CI adds an analyze gate).
+3. **Windows desktop:** `flutter run -d windows` with `--dart-define=CLIENT_API_BASE_URL=...` and `--dart-define=OPS_API_BASE_URL=...` (see Flutter section above; super-admin flows need **8087**).
+4. **Android emulator:** `flutter devices` then `flutter run -d <emulator>` using **`http://10.0.2.2:8085`** and **`http://10.0.2.2:8087`** for client_api and ops_api when the stack runs on the host loopback.
+5. **Chat G (owner / agent):** login → inbox list/detail → filters / assign or thread actions as applicable → **Dashboard** tab → app bar **Refresh** (`bumpDashGeneration`) → confirm **`/dash/client/*`** JSON loads or documented **404** mock path.
+6. **Chat H (`super_admin`):** login with a seeded **`super_admin`** → **SOPs:** create or open SOP → edit/save → **versions / diff / restore** smoke → **Runs:** start a run with sample `context_json` → list/detail → **Dash** tab: expand endpoints — charts + **Raw JSON**; `GET /dash/admin/*` loads or **401** logs out cleanly → **403** shows “needs **super_admin**” without a retry loop when testing a non–super-admin token on a second run (optional).
+
 ---
 
 ## Sequential follow-through (stem checklist)
@@ -490,8 +548,8 @@ Status webhooks from Meta update **`wa_status_events`** and **`wa_outbox`** via 
 
 | Item | Status |
 |------|--------|
-| **`HANDOFF` / `NEEDS_OWNER_DATA` in `batch_processor`** | Updates **`inbox_chats`** to **`PENDING_AGENT`**, sets **`handoff_reason`**, **`pg_notify('zy_chat_events', json)`** for cross-process subscribers. |
-| **LISTEN instead of poller** | **`client_api`** still uses **`DBPoller`** for **`inbox_messages` / `wa_outbox` / `chat_assignments`**. Watch NOTIFY with **`python backend/tools/dev_listen_chat_events.py`**. Replacing the poller with an in-process LISTEN bridge is a larger follow-up. |
+| **`HANDOFF` / `NEEDS_OWNER_DATA` in `batch_processor`** | Updates **`inbox_chats`** to **`HUMAN_REQ`** / **`WAITING_OWNER_DATA`**, sets **`handoff_reason`**, **`pg_notify('zy_chat_events', json)`**, and inserts **`inbox_notifications`** for owners (best-effort). |
+| **LISTEN instead of poller** | **`client_api`** still uses **`DBPoller`** for **`inbox_messages` / `wa_outbox` / `chat_assignments` / `inbox_notifications`**. Watch NOTIFY with **`python backend/tools/dev_listen_chat_events.py`**. Replacing the poller with an in-process LISTEN bridge is a larger follow-up. |
 | **Agent reply idempotency** | Optional HTTP header **`Idempotency-Key`**: 1–128 chars `[A-Za-z0-9_-]`. Same key + same user replays return the stored message + outbox id without duplicating sends. |
 
 ### 3) Flutter (`flutter_app/` and `mobile/`)
@@ -501,7 +559,12 @@ Status webhooks from Meta update **`wa_status_events`** and **`wa_outbox`** via 
 
 ### 4) Release / CI
 
-GitHub Actions workflow **`.github/workflows/ci.yml`** runs **`python -m pytest tests/`** on push/PR to **`main`** / **`master`**.
+GitHub Actions **`.github/workflows/ci.yml`** (Ubuntu, Python **3.12**) runs **`python -m pytest tests/ -q`** with workspace **`PYTHONPATH`** on push/PR to **`main`** / **`master`**. No Postgres **service** job in CI yet.
 
-Optional later job: Postgres service container + **`RUN_WA_GATEWAY_E2E=1`** + uvicorn gateway (not wired by default).
+**M10 / Chat M — documentation handoff (done in repo):** **`/ops/releases*`** product scope, **target CI** layout, **manual approval hooks** for sensitive paths, **Chat N** full smoke after **CI workflow topology** changes, **`docs/BLUEPRINT_IMPLEMENTATION_CHECKLIST.md`** § M10 + **Meta** cross-rule, **`HANDOFF.md`** — all written for the next implementation pass. **Still not built:** release manager **APIs**, Postgres **service** / integration / contract / E2E **jobs** in **`ci.yml`**; GitHub **Environments** / **CODEOWNERS** are **process** until Stem configures the org.
 
+**Planned (M10 / Chat M — implementation):** a **Postgres `services:`** job (**`alembic upgrade head`** + **`RUN_POSTGRES_INTEGRATION=1`**), additional **contract** jobs if split is needed for runtime, and an optional **`RUN_WA_GATEWAY_E2E=1`** job (secrets off by default on PRs from forks).
+
+**Manual approval (process — configure in GitHub):** changes under **`backend/apps/ai_engine/`**, **`backend/apps/wa_gateway/`**, and **`backend/apps/billing_api/`** should be reviewed by a human before production promotion. Typical levers: **`production` Environment** with **required reviewers**, **`CODEOWNERS`**, and/or **branch protection**. Stem picks which apply to this org.
+
+**After CI workflow topology changes** (new jobs, services, matrix): run the full **Non-dev / staging smoke checklist (10 steps)** in this README (plus documented optional gates — workers, **`dev_ops_api_smoke.py`**, Flutter **`dart analyze` + device smoke** when relevant). **Chat N** owns recording pass/fail for that PR (see **`HANDOFF.md`** **Stem note — Chat N** and **Chat M** paste block).

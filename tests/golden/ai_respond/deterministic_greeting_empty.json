@@ -1,0 +1,11 @@
+{
+  "description": "Whitespace-only batch → greeting REPLY (no LLM path)",
+  "batch_text": "   ",
+  "urgent_bypass_substrings": [],
+  "expected": {
+    "action": "REPLY",
+    "intent": "greeting",
+    "routing_intent": "general",
+    "language": "auto"
+  }
+}

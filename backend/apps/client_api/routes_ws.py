@@ -2,7 +2,16 @@ from __future__ import annotations
 
 """WebSocket route for client_api real-time events.
 
-Client connects to ``ws://<host>/ws?token=<JWT>``.
+Use **WSS** in staging/production. Authenticate with a **short-lived JWT** in the
+query string (``?token=…``) issued by the same login flow as REST; rotate secrets
+and keep TTL modest so a leaked URL does not grant long-lived socket access.
+
+Optionally set ``CLIENT_API_WS_ALLOWED_ORIGINS`` to a comma-separated list of
+exact browser ``Origin`` header values; when non-empty, connections from other
+origins are rejected before the socket is accepted.
+
+Client connects to ``wss://<host>/ws?token=<JWT>`` (and ``client_id=`` for
+scoped ``super_admin``).
 
 Server → Client envelope (JSON):
     { "event": <event_name>, "data": {...}, "ts": <iso8601> }
@@ -13,6 +22,7 @@ Events:
     assignment_changed   — assignment created / reassigned / ended
     typing               — typing presence update for a chat
     chat_state_changed   — chat.state transition (in-process emissions only)
+    notification         — in-app notification row (assignment, handoff, resolve, …)
     error                — terminal error envelope before close
 
 Client → Server (optional):
@@ -26,6 +36,8 @@ from datetime import datetime, timezone
 
 import jwt
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, status
+
+from backend.shared.config import settings
 
 from .auth import decode_jwt
 from .events import hub
@@ -70,6 +82,14 @@ async def ws_endpoint(ws: WebSocket) -> None:
         client_id = ws.query_params.get("client_id")
         if not client_id:
             await ws.close(code=status.WS_1008_POLICY_VIOLATION, reason="missing client_id for super_admin")
+            return
+
+    allowed = (settings.client_api_ws_allowed_origins or "").strip()
+    if allowed:
+        allowed_set = {o.strip() for o in allowed.split(",") if o.strip()}
+        origin = (ws.headers.get("origin") or "").strip()
+        if origin not in allowed_set:
+            await ws.close(code=status.WS_1008_POLICY_VIOLATION, reason="origin not allowed")
             return
 
     await ws.accept()

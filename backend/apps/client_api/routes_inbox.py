@@ -2,16 +2,19 @@ from __future__ import annotations
 
 """Inbox + assignment + typing + agent reply routes for client_api.
 
-State model (``inbox_chats.state`` — column is free TEXT but we treat it as):
-    AI_ACTIVE       — AI is responsible
-    PENDING_AGENT   — needs an agent (handoff or escalation, unassigned)
-    AGENT_ACTIVE    — an agent currently owns the chat
-    RESOLVED        — closed
+Blueprint ``inbox_chats.state`` values (CHECK enforced by migration ``0008``):
+
+    AI_ACTIVE            — AI is responsible
+    HUMAN_REQ            — needs a human agent (unassigned queue)
+    WAITING_OWNER_DATA   — AI needs owner-supplied data before continuing
+    AGENT_ACTIVE         — an agent owns the conversation
+    CLOSED               — resolved / archived
+
+``chat_assignments.status`` still uses ACTIVE / REASSIGNED / RESOLVED (assignment row lifecycle, not chat state).
 
 Invariants:
 - ``chat_assignments`` has a partial UNIQUE on (chat_id) WHERE status='ACTIVE'.
-- Switching agents → end ACTIVE row (status='REASSIGNED') then insert a new
-  ACTIVE row, all within one transaction.
+- Switching agents → end ACTIVE row (status='REASSIGNED') then insert a new ACTIVE row, all within one transaction.
 """
 
 import json
@@ -25,6 +28,11 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.exc import IntegrityError
 
 from backend.shared.db import engine
+from backend.shared.inbox_notify import (
+    insert_assignment_audit,
+    insert_notification,
+    owner_user_ids_for_client,
+)
 
 from .auth import ROLE_AGENT, ROLE_OWNER, ROLE_SUPER_ADMIN
 from .deps import CurrentUser, assert_role_in, get_current_user, resolve_client_scope
@@ -44,8 +52,11 @@ from .models import (
     EscalateRequest,
     LEGAL_CHAT_STATES,
     MessageOut,
+    NotificationList,
+    NotificationOut,
     ReplyRequest,
     ReplyResponse,
+    ResolveRequest,
     TypingRequest,
     UnassignRequest,
 )
@@ -87,7 +98,8 @@ def _load_chat(conn: Connection, chat_id: str, client_id: str) -> dict[str, Any]
         text(
             """
             SELECT id::text, client_id::text, customer_phone, state, assigned_agent_id::text,
-                   last_customer_msg_at, last_outbound_at, created_at, waba_number::text
+                   last_customer_msg_at, last_outbound_at, created_at, waba_number::text,
+                   ai_paused_until
             FROM inbox_chats
             WHERE id = CAST(:cid AS uuid) AND client_id = CAST(:client AS uuid)
             FOR UPDATE
@@ -107,6 +119,7 @@ def _load_chat(conn: Connection, chat_id: str, client_id: str) -> dict[str, Any]
         "last_outbound_at": row[6],
         "created_at": row[7],
         "waba_number": row[8],
+        "ai_paused_until": row[9],
     }
 
 
@@ -121,6 +134,7 @@ def _to_list_item(row: dict[str, Any]) -> ChatListItem:
         last_outbound_at=row["last_outbound_at"],
         created_at=row["created_at"],
         last_message_preview=row.get("last_message_preview"),
+        ai_paused_until=row.get("ai_paused_until"),
     )
 
 
@@ -230,6 +244,65 @@ def _publish_state_change(client_id: str, chat_id: str, prior: str | None, new: 
     )
 
 
+def _normalize_legacy_state_filter(state: str | None) -> str | None:
+    """Map pre-0008 filter values for backward-compatible clients."""
+    if state is None:
+        return None
+    s = state.strip()
+    if s == "PENDING_AGENT":
+        return "HUMAN_REQ"
+    if s == "RESOLVED":
+        return "CLOSED"
+    return s
+
+
+def _validate_state_filter(state: str) -> None:
+    if state not in LEGAL_CHAT_STATES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"invalid state filter; use one of: {', '.join(LEGAL_CHAT_STATES)}",
+        )
+
+
+def _coerce_jsonb_int_cfg(value: Any, default: int) -> int:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        s = value.strip()
+        if not s:
+            return default
+        try:
+            return int(s)
+        except ValueError:
+            return default
+    return default
+
+
+def _pause_hours_agent_reply(conn: Connection, client_id: str) -> int:
+    """Hours to extend ``ai_paused_until`` after an agent reply (Starter vs default from ops_runtime_config)."""
+    row = conn.execute(
+        text("SELECT entitlement_plan FROM api_clients WHERE id = CAST(:c AS uuid)"),
+        {"c": client_id},
+    ).fetchone()
+    plan = (str(row[0]).lower() if row and row[0] else "trial")
+    key = (
+        "inbox.agent_reply_pause_hours_starter"
+        if plan == "starter"
+        else "inbox.agent_reply_pause_hours_default"
+    )
+    raw = conn.execute(
+        text("SELECT value_json FROM ops_runtime_config WHERE key = :k"),
+        {"k": key},
+    ).scalar_one_or_none()
+    return _coerce_jsonb_int_cfg(raw, 24)
+
+
 # ----------------------- list / detail -----------------------
 
 
@@ -237,7 +310,19 @@ def _publish_state_change(client_id: str, chat_id: str, prior: str | None, new: 
 def list_chats(
     user: Annotated[CurrentUser, Depends(get_current_user)],
     client_id: Annotated[str | None, Query(description="Required for super_admin")] = None,
-    state: Annotated[str | None, Query(description="Filter by state (AI_ACTIVE|PENDING_AGENT|AGENT_ACTIVE|RESOLVED)")] = None,
+    state: Annotated[
+        str | None,
+        Query(
+            description=(
+                "Filter by blueprint state: AI_ACTIVE|HUMAN_REQ|WAITING_OWNER_DATA|"
+                "AGENT_ACTIVE|CLOSED. Legacy aliases PENDING_AGENT→HUMAN_REQ, RESOLVED→CLOSED."
+            )
+        ),
+    ] = None,
+    human_queue: Annotated[
+        bool,
+        Query(description="If true, restrict to HUMAN_REQ or WAITING_OWNER_DATA (needs-human queue)."),
+    ] = False,
     assigned: Annotated[
         str | None,
         Query(description="'me' | 'unassigned' | a user_id"),
@@ -248,9 +333,13 @@ def list_chats(
     scope = resolve_client_scope(user, explicit_client_id=client_id)
     params: dict[str, Any] = {"cid": scope, "lim": limit}
     where = ["c.client_id = CAST(:cid AS uuid)"]
-    if state:
+    if human_queue:
+        where.append("c.state IN ('HUMAN_REQ','WAITING_OWNER_DATA')")
+    elif state and str(state).strip():
+        st = _normalize_legacy_state_filter(state.strip())
+        _validate_state_filter(st)
         where.append("c.state = :state")
-        params["state"] = state
+        params["state"] = st
     if assigned == "me":
         where.append("c.assigned_agent_id = CAST(:me AS uuid)")
         params["me"] = user.id
@@ -268,6 +357,7 @@ def list_chats(
     sql = f"""
         SELECT c.id::text, c.client_id::text, c.customer_phone, c.state,
                c.assigned_agent_id::text, c.last_customer_msg_at, c.last_outbound_at, c.created_at,
+               c.ai_paused_until,
                (SELECT text FROM inbox_messages
                   WHERE chat_id = c.id ORDER BY timestamp DESC LIMIT 1) AS last_preview
         FROM inbox_chats c
@@ -287,7 +377,8 @@ def list_chats(
             last_customer_msg_at=r[5],
             last_outbound_at=r[6],
             created_at=r[7],
-            last_message_preview=r[8],
+            ai_paused_until=r[8],
+            last_message_preview=r[9],
         )
         for r in rows
     ]
@@ -310,7 +401,7 @@ def chat_detail(
             text(
                 """
                 SELECT id::text, client_id::text, customer_phone, state, assigned_agent_id::text,
-                       last_customer_msg_at, last_outbound_at, created_at
+                       last_customer_msg_at, last_outbound_at, created_at, ai_paused_until
                 FROM inbox_chats
                 WHERE id = CAST(:cid AS uuid) AND client_id = CAST(:client AS uuid)
                 """
@@ -403,6 +494,7 @@ def chat_detail(
         last_customer_msg_at=chat[5],
         last_outbound_at=chat[6],
         created_at=chat[7],
+        ai_paused_until=chat[8],
     )
     return ChatDetail(
         chat=item,
@@ -410,6 +502,100 @@ def chat_detail(
         messages=messages,
         pending_outbound=pending,
     )
+
+
+# ----------------------- notifications -----------------------
+
+
+def _parse_notification_payload(raw: Any) -> dict[str, Any]:
+    if raw is None:
+        return {}
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        try:
+            return json.loads(raw)
+        except Exception:
+            return {}
+    return {}
+
+
+@router.get("/notifications", response_model=NotificationList)
+def list_notifications(
+    user: Annotated[CurrentUser, Depends(get_current_user)],
+    client_id: Annotated[str | None, Query(description="Required for super_admin")] = None,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    unread_only: Annotated[
+        bool,
+        Query(description="If true, only notifications where read_at IS NULL."),
+    ] = False,
+) -> NotificationList:
+    """In-app notifications for the signed-in user within the scoped client."""
+    assert_role_in(user, (ROLE_OWNER, ROLE_AGENT, ROLE_SUPER_ADMIN))
+    scope = resolve_client_scope(user, explicit_client_id=client_id)
+    params: dict[str, Any] = {"cid": scope, "uid": user.id, "lim": limit}
+    where = [
+        "n.client_id = CAST(:cid AS uuid)",
+        "n.recipient_user_id = CAST(:uid AS uuid)",
+    ]
+    if unread_only:
+        where.append("n.read_at IS NULL")
+    sql = f"""
+        SELECT n.id::text, n.client_id::text, n.recipient_user_id::text, n.chat_id::text,
+               n.kind, n.title, n.body, n.payload, n.read_at, n.created_at
+        FROM inbox_notifications n
+        WHERE {' AND '.join(where)}
+        ORDER BY n.created_at DESC
+        LIMIT :lim
+    """
+    with engine.begin() as conn:
+        rows = conn.execute(text(sql), params).all()
+    items = [
+        NotificationOut(
+            id=r[0],
+            client_id=r[1],
+            recipient_user_id=r[2],
+            chat_id=r[3],
+            kind=r[4],
+            title=r[5],
+            body=r[6],
+            payload=_parse_notification_payload(r[7]),
+            read_at=r[8],
+            created_at=r[9],
+        )
+        for r in rows
+    ]
+    return NotificationList(items=items)
+
+
+@router.post("/notifications/{notification_id}/read")
+def mark_notification_read(
+    notification_id: str,
+    user: Annotated[CurrentUser, Depends(get_current_user)],
+    client_id: Annotated[str | None, Query(description="Required for super_admin")] = None,
+) -> dict[str, Any]:
+    """Mark a single notification row read (idempotent for the recipient)."""
+    assert_role_in(user, (ROLE_OWNER, ROLE_AGENT, ROLE_SUPER_ADMIN))
+    if not _is_uuid(notification_id):
+        raise HTTPException(status_code=400, detail="invalid notification_id")
+    scope = resolve_client_scope(user, explicit_client_id=client_id)
+    with engine.begin() as conn:
+        r = conn.execute(
+            text(
+                """
+                UPDATE inbox_notifications
+                SET read_at = COALESCE(read_at, now())
+                WHERE id = CAST(:nid AS uuid)
+                  AND client_id = CAST(:cid AS uuid)
+                  AND recipient_user_id = CAST(:uid AS uuid)
+                RETURNING id::text
+                """
+            ),
+            {"nid": notification_id, "cid": scope, "uid": user.id},
+        ).fetchone()
+    if not r:
+        raise HTTPException(status_code=404, detail="notification not found")
+    return {"ok": True}
 
 
 # ----------------------- assignment -----------------------
@@ -437,6 +623,8 @@ def _do_assign(
             raise HTTPException(status_code=409, detail="chat already has an active assignment; use /reassign")
         if current and current["assigned_to_user_id"] == assignee["id"]:
             return _assignment_out(current)
+        prior_assignee_id = current["assigned_to_user_id"] if current else None
+        evt = "REASSIGNED" if prior_assignee_id else "ASSIGNED"
         if current:
             _end_active_assignment(conn, chat_id=chat_id, new_status="REASSIGNED")
         try:
@@ -480,6 +668,54 @@ def _do_assign(
             {"to": assignee["id"], "cid": chat_id, "reason": body.reason},
         )
 
+        insert_assignment_audit(
+            conn,
+            client_id=client_scope,
+            chat_id=chat_id,
+            assignment_id=row[0],
+            event_type=evt,
+            actor_user_id=actor.id,
+            from_user_id=prior_assignee_id,
+            to_user_id=assignee["id"],
+            meta={
+                "reason": body.reason,
+                "note": body.note,
+                "customer_phone": chat.get("customer_phone"),
+            },
+        )
+        phone = (str(chat.get("customer_phone") or "")).strip()
+        title_asg = "You were assigned a chat"
+        body_asg = phone or None
+        insert_notification(
+            conn,
+            client_id=client_scope,
+            recipient_user_id=assignee["id"],
+            chat_id=chat_id,
+            kind="inbox_assigned",
+            title=title_asg,
+            body=body_asg,
+            payload={"chat_id": chat_id, "assignment_id": row[0], "event": evt.lower()},
+        )
+        title_cc = f"Chat assigned: {phone}" if phone else "Chat assigned"
+        for oid in owner_user_ids_for_client(conn, client_scope):
+            if oid == assignee["id"]:
+                continue
+            insert_notification(
+                conn,
+                client_id=client_scope,
+                recipient_user_id=oid,
+                chat_id=chat_id,
+                kind="inbox_assignment_owner_cc",
+                title=title_cc,
+                body=body_asg,
+                payload={
+                    "chat_id": chat_id,
+                    "assignment_id": row[0],
+                    "assignee_user_id": assignee["id"],
+                    "event": evt.lower(),
+                },
+            )
+
     a = {
         "id": row[0],
         "chat_id": row[1],
@@ -501,7 +737,7 @@ def _do_assign(
             "assigned_by_user_id": a["assigned_by_user_id"],
             "reason": a["reason"],
             "status": a["status"],
-            "prior_assigned_to_user_id": current["assigned_to_user_id"] if current else None,
+            "prior_assigned_to_user_id": prior_assignee_id,
         },
     )
     _publish_state_change(client_scope, chat_id, chat["state"], "AGENT_ACTIVE")
@@ -556,19 +792,58 @@ def unassign(
         if user.role == ROLE_AGENT and current["assigned_to_user_id"] != user.id:
             raise HTTPException(status_code=403, detail="agents may only unassign their own chats")
 
+        prior_assignee = current["assigned_to_user_id"]
+        phone = (str(chat.get("customer_phone") or "")).strip()
         _end_active_assignment(conn, chat_id=chat_id, new_status="REASSIGNED")
         conn.execute(
             text(
                 """
                 UPDATE inbox_chats
                 SET assigned_agent_id = NULL,
-                    state = 'PENDING_AGENT',
+                    state = 'HUMAN_REQ',
                     handoff_reason = COALESCE(:reason, handoff_reason)
                 WHERE id = CAST(:cid AS uuid)
                 """
             ),
             {"cid": chat_id, "reason": body.reason},
         )
+        insert_assignment_audit(
+            conn,
+            client_id=scope,
+            chat_id=chat_id,
+            assignment_id=current["id"],
+            event_type="UNASSIGNED",
+            actor_user_id=user.id,
+            from_user_id=prior_assignee,
+            to_user_id=None,
+            meta={"reason": body.reason, "customer_phone": phone},
+        )
+        title_prev = "You were unassigned from a chat"
+        body_prev = phone or None
+        insert_notification(
+            conn,
+            client_id=scope,
+            recipient_user_id=prior_assignee,
+            chat_id=chat_id,
+            kind="inbox_unassigned",
+            title=title_prev,
+            body=body_prev,
+            payload={"chat_id": chat_id, "assignment_id": current["id"]},
+        )
+        title_cc = f"Chat unassigned: {phone}" if phone else "Chat unassigned"
+        for oid in owner_user_ids_for_client(conn, scope):
+            if oid == prior_assignee:
+                continue
+            insert_notification(
+                conn,
+                client_id=scope,
+                recipient_user_id=oid,
+                chat_id=chat_id,
+                kind="inbox_assignment_owner_cc",
+                title=title_cc,
+                body=body_prev,
+                payload={"chat_id": chat_id, "prior_assignee_user_id": prior_assignee},
+            )
 
     hub.publish(
         scope,
@@ -583,8 +858,8 @@ def unassign(
             "status": "REASSIGNED",
         },
     )
-    _publish_state_change(scope, chat_id, chat["state"], "PENDING_AGENT")
-    return {"ok": True, "changed": True, "state": "PENDING_AGENT"}
+    _publish_state_change(scope, chat_id, chat["state"], "HUMAN_REQ")
+    return {"ok": True, "changed": True, "state": "HUMAN_REQ"}
 
 
 @router.post("/chats/{chat_id}/escalate")
@@ -598,7 +873,7 @@ def escalate(
 
     - If ``to_user_id`` is provided: behaves like reassign (assigns to that user
       and sets state=AGENT_ACTIVE).
-    - Otherwise: ends any active assignment and sets state=PENDING_AGENT so any
+    - Otherwise: ends any active assignment and sets state=HUMAN_REQ so any
       agent can pick it up.
     """
     assert_role_in(user, (ROLE_OWNER, ROLE_AGENT, ROLE_SUPER_ADMIN))
@@ -614,11 +889,14 @@ def escalate(
 
     if not _is_uuid(chat_id):
         raise HTTPException(status_code=400, detail="invalid chat_id")
+    current: dict[str, Any] | None = None
     with engine.begin() as conn:
         chat = _load_chat(conn, chat_id, scope)
         if not chat:
             raise HTTPException(status_code=404, detail="chat not found")
         current = _active_assignment(conn, chat_id)
+        prior_assignee = current["assigned_to_user_id"] if current else None
+        phone = (str(chat.get("customer_phone") or "")).strip()
         if current:
             _end_active_assignment(conn, chat_id=chat_id, new_status="REASSIGNED")
         conn.execute(
@@ -626,7 +904,7 @@ def escalate(
                 """
                 UPDATE inbox_chats
                 SET assigned_agent_id = NULL,
-                    state = 'PENDING_AGENT',
+                    state = 'HUMAN_REQ',
                     handoff_reason = COALESCE(:reason, handoff_reason),
                     pending_since = COALESCE(pending_since, now())
                 WHERE id = CAST(:cid AS uuid)
@@ -634,6 +912,46 @@ def escalate(
             ),
             {"cid": chat_id, "reason": body.reason or "escalated"},
         )
+        insert_assignment_audit(
+            conn,
+            client_id=scope,
+            chat_id=chat_id,
+            assignment_id=current["id"] if current else None,
+            event_type="ESCALATED_TO_QUEUE",
+            actor_user_id=user.id,
+            from_user_id=prior_assignee,
+            to_user_id=None,
+            meta={"reason": body.reason or "escalated", "customer_phone": phone},
+        )
+        reason_txt = body.reason or "escalated"
+        if prior_assignee:
+            title_prev = "Chat escalated to human queue"
+            body_prev = f"{phone}\n{reason_txt}".strip() if phone else reason_txt
+            insert_notification(
+                conn,
+                client_id=scope,
+                recipient_user_id=prior_assignee,
+                chat_id=chat_id,
+                kind="inbox_escalated",
+                title=title_prev,
+                body=body_prev,
+                payload={"chat_id": chat_id, "reason": reason_txt},
+            )
+        title_cc = f"Chat escalated: {phone}" if phone else "Chat escalated to human queue"
+        body_cc = reason_txt
+        for oid in owner_user_ids_for_client(conn, scope):
+            if prior_assignee and oid == prior_assignee:
+                continue
+            insert_notification(
+                conn,
+                client_id=scope,
+                recipient_user_id=oid,
+                chat_id=chat_id,
+                kind="inbox_escalated_owner_cc",
+                title=title_cc,
+                body=body_cc,
+                payload={"chat_id": chat_id, "reason": reason_txt},
+            )
 
     if current:
         hub.publish(
@@ -649,8 +967,108 @@ def escalate(
                 "status": "REASSIGNED",
             },
         )
-    _publish_state_change(scope, chat_id, chat["state"], "PENDING_AGENT")
-    return {"ok": True, "state": "PENDING_AGENT"}
+    _publish_state_change(scope, chat_id, chat["state"], "HUMAN_REQ")
+    return {"ok": True, "state": "HUMAN_REQ"}
+
+
+@router.post("/chats/{chat_id}/resolve")
+def resolve_chat(
+    chat_id: str,
+    body: ResolveRequest,
+    user: Annotated[CurrentUser, Depends(get_current_user)],
+    client_id: Annotated[str | None, Query(description="Required for super_admin")] = None,
+) -> dict[str, Any]:
+    """Mark a chat closed (blueprint ``CLOSED``): clears assignee and ends any ACTIVE assignment."""
+    assert_role_in(user, (ROLE_OWNER, ROLE_SUPER_ADMIN))
+    scope = resolve_client_scope(user, explicit_client_id=client_id)
+    if not _is_uuid(chat_id):
+        raise HTTPException(status_code=400, detail="invalid chat_id")
+
+    with engine.begin() as conn:
+        chat = _load_chat(conn, chat_id, scope)
+        if not chat:
+            raise HTTPException(status_code=404, detail="chat not found")
+        if chat["state"] == "CLOSED":
+            return {"ok": True, "changed": False, "state": "CLOSED"}
+
+        current = _active_assignment(conn, chat_id)
+        prior_assignee = current["assigned_to_user_id"] if current else None
+        ended_id = None
+        if current:
+            ended = _end_active_assignment(conn, chat_id=chat_id, new_status="RESOLVED")
+            ended_id = ended["id"] if ended else current["id"]
+        phone = (str(chat.get("customer_phone") or "")).strip()
+        reason_txt = (body.reason or "").strip() or None
+        conn.execute(
+            text(
+                """
+                UPDATE inbox_chats
+                SET state = 'CLOSED',
+                    assigned_agent_id = NULL,
+                    handoff_reason = COALESCE(:reason, handoff_reason)
+                WHERE id = CAST(:cid AS uuid)
+                """
+            ),
+            {"cid": chat_id, "reason": body.reason},
+        )
+        insert_assignment_audit(
+            conn,
+            client_id=scope,
+            chat_id=chat_id,
+            assignment_id=ended_id,
+            event_type="CHAT_RESOLVED",
+            actor_user_id=user.id,
+            from_user_id=prior_assignee,
+            to_user_id=None,
+            meta={"reason": body.reason, "customer_phone": phone},
+        )
+        notified: set[str] = set()
+        if prior_assignee:
+            title_a = "Chat you were on was resolved"
+            body_a = phone or reason_txt
+            insert_notification(
+                conn,
+                client_id=scope,
+                recipient_user_id=prior_assignee,
+                chat_id=chat_id,
+                kind="inbox_chat_resolved",
+                title=title_a,
+                body=body_a,
+                payload={"chat_id": chat_id, "reason": body.reason},
+            )
+            notified.add(prior_assignee)
+        title_o = f"Chat resolved: {phone}" if phone else "Chat resolved"
+        body_o = reason_txt
+        for oid in owner_user_ids_for_client(conn, scope):
+            if oid in notified:
+                continue
+            insert_notification(
+                conn,
+                client_id=scope,
+                recipient_user_id=oid,
+                chat_id=chat_id,
+                kind="inbox_chat_resolved_owner_cc",
+                title=title_o,
+                body=body_o,
+                payload={"chat_id": chat_id, "reason": body.reason},
+            )
+
+    if current:
+        hub.publish(
+            scope,
+            EVENT_ASSIGNMENT_CHANGED,
+            {
+                "chat_id": chat_id,
+                "assignment_id": current["id"],
+                "assigned_to_user_id": None,
+                "prior_assigned_to_user_id": prior_assignee,
+                "assigned_by_user_id": user.id,
+                "reason": body.reason or "resolved",
+                "status": "RESOLVED",
+            },
+        )
+    _publish_state_change(scope, chat_id, chat["state"], "CLOSED")
+    return {"ok": True, "changed": True, "state": "CLOSED"}
 
 
 # ----------------------- typing -----------------------
@@ -735,13 +1153,17 @@ def reply(
     body: ReplyRequest,
     user: Annotated[CurrentUser, Depends(get_current_user)],
     client_id: Annotated[str | None, Query(description="Required for super_admin")] = None,
-    idempotency_key_header: Annotated[str | None, Header(default=None, alias="Idempotency-Key")] = None,
+    idempotency_key_header: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ) -> ReplyResponse:
     """Send an agent reply.
 
     Mirrors the message into ``inbox_messages`` (direction='out', sender='agent')
     AND enqueues a ``wa_outbox`` row with kind='AGENT_REPLY' for the outbox sender
     to deliver to Meta.
+
+    Also extends ``inbox_chats.ai_paused_until`` by the configured pause window
+    (Starter vs default from ``ops_runtime_config``) so AI does not immediately
+    race the human.
 
     Idempotency:
 
@@ -776,6 +1198,8 @@ def reply(
                 detail="chat has no associated wa_number (cannot enqueue outbox row)",
             )
 
+        pause_h = _pause_hours_agent_reply(conn, scope)
+
         if client_key:
             idem = f"agent:{chat_id}:{user.id}:{client_key}"
             replay = conn.execute(
@@ -806,6 +1230,16 @@ def reply(
                         timestamp=msg_ts,
                         meta_msg_id=None,
                         source="inbox_messages",
+                    )
+                    conn.execute(
+                        text(
+                            """
+                            UPDATE inbox_chats
+                            SET ai_paused_until = now() + make_interval(hours => :ph)
+                            WHERE id = CAST(:cid AS uuid)
+                            """
+                        ),
+                        {"cid": chat_id, "ph": pause_h},
                     )
                     return ReplyResponse(
                         message=msg_out,
@@ -842,11 +1276,12 @@ def reply(
                         """
                         UPDATE inbox_chats
                         SET last_outbound_at = now(),
-                            state = 'AGENT_ACTIVE'
+                            state = 'AGENT_ACTIVE',
+                            ai_paused_until = now() + make_interval(hours => :ph)
                         WHERE id = CAST(:cid AS uuid)
                         """
                     ),
-                    {"cid": chat_id},
+                    {"cid": chat_id, "ph": pause_h},
                 )
                 msg_out = MessageOut(
                     id=msg_id,
@@ -920,11 +1355,12 @@ def reply(
                 """
                 UPDATE inbox_chats
                 SET last_outbound_at = now(),
-                    state = 'AGENT_ACTIVE'
+                    state = 'AGENT_ACTIVE',
+                    ai_paused_until = now() + make_interval(hours => :ph)
                 WHERE id = CAST(:cid AS uuid)
                 """
             ),
-            {"cid": chat_id},
+            {"cid": chat_id, "ph": pause_h},
         )
 
     msg_out = MessageOut(

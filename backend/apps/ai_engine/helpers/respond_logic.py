@@ -47,13 +47,28 @@ _OWNER_DATA_MARKERS = (
 
 
 def detect_language(batch_text: str) -> str:
-    """Return BCP-47 style tag: 'hi' | 'en' | 'auto' (unknown / empty)."""
+    """
+    Best-effort customer language tag for ``AIResponse.language`` (stable string field).
+
+    - ``hinglish``: Devanagari + Latin letters in the same message (code-mixed).
+    - ``hi``: Devanagari only (or Devanagari without separate Latin word tokens).
+    - ``en``: Latin-script default (includes Romanized Hindi without Devanagari).
+    - ``auto``: empty / whitespace-only.
+    """
     if not batch_text or not batch_text.strip():
         return "auto"
-    for ch in batch_text:
-        if "\u0900" <= ch <= "\u097f":
-            return "hi"
+    has_devanagari = any("\u0900" <= ch <= "\u097f" for ch in batch_text)
+    has_latin_letters = any(ch.isascii() and ch.isalpha() for ch in batch_text)
+    if has_devanagari and has_latin_letters:
+        return "hinglish"
+    if has_devanagari:
+        return "hi"
     return "en"
+
+
+def is_llm_eligible_decision(d: AIRespondDecision) -> bool:
+    """Only the default general acknowledgement path may call an external LLM."""
+    return d.action == "REPLY" and d.intent == "general_ack" and d.routing_intent == "general"
 
 
 def _lower_contains(haystack: str, needle: str) -> bool:

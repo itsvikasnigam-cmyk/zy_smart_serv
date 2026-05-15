@@ -8,7 +8,7 @@ import '../models/chat_models.dart';
 import '../models/user_model.dart';
 import '../state/session_controller.dart';
 
-enum _ChatMenuAction { reassign, unassign, escalateQueue, escalateToAgent }
+enum _ChatMenuAction { reassign, unassign, escalateQueue, escalateToAgent, resolve }
 
 class ChatDetailScreen extends StatefulWidget {
   const ChatDetailScreen({
@@ -181,10 +181,49 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
       session.bumpInboxGeneration();
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Returned chat to queue')),
+          const SnackBar(content: Text('Returned to human queue')),
         );
       }
       if (mounted) setState(() {});
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('$e')),
+        );
+      }
+    }
+  }
+
+  Future<void> _resolveChat(BuildContext context, SessionController session) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Resolve chat?'),
+        content: const Text(
+          'Marks this chat closed (CLOSED) and releases any assignment. '
+          'This is intended for owners when the conversation is finished.',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Resolve')),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    try {
+      await session.api.postResolve(
+        token: session.token!,
+        user: session.user!,
+        chatId: widget.chatId,
+        reason: 'resolved_from_app',
+      );
+      session.bumpInboxGeneration();
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Chat resolved')),
+        );
+      }
+      if (mounted) Navigator.of(context).pop();
     } catch (e) {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -204,7 +243,7 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
       session.bumpInboxGeneration();
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Escalated to agent queue')),
+          const SnackBar(content: Text('Returned to human queue')),
         );
       }
       if (mounted) setState(() {});
@@ -223,6 +262,7 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
     final timeFmt = DateFormat.Hm();
     final isOwner = session.user?.isOwner ?? false;
     final isAgent = session.user?.isAgent ?? false;
+    final isSuper = session.user?.isSuperAdmin ?? false;
 
     return Scaffold(
       appBar: AppBar(
@@ -290,6 +330,10 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
                   case _ChatMenuAction.escalateQueue:
                     await _escalateToQueue(context, session);
                     return;
+                  case _ChatMenuAction.resolve:
+                    if (!isOwner && !isSuper) return;
+                    await _resolveChat(context, session);
+                    return;
                   case _ChatMenuAction.escalateToAgent:
                     final chosen = await _pickAgentUser(
                       context,
@@ -328,6 +372,14 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
               },
               itemBuilder: (ctx) {
                 final entries = <PopupMenuEntry<_ChatMenuAction>>[];
+                if (isOwner || isSuper) {
+                  entries.add(
+                    const PopupMenuItem(
+                      value: _ChatMenuAction.resolve,
+                      child: Text('Resolve (close)…'),
+                    ),
+                  );
+                }
                 if (isOwner) {
                   entries.add(
                     const PopupMenuItem(
@@ -339,7 +391,7 @@ class _ChatDetailScreenState extends State<ChatDetailScreen> {
                 entries.addAll([
                   const PopupMenuItem(
                     value: _ChatMenuAction.escalateQueue,
-                    child: Text('Return to agent queue'),
+                    child: Text('Return to human queue'),
                   ),
                   const PopupMenuItem(
                     value: _ChatMenuAction.escalateToAgent,

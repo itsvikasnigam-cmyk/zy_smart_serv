@@ -17,6 +17,7 @@ from backend.apps.ai_engine.helpers.respond_logic import (
         ("   ", "auto"),
         ("Hello there", "en"),
         ("नमस्ते कैसे हो", "hi"),
+        ("kya आप Sunday को deliver करते हो?", "hinglish"),
     ],
 )
 def test_detect_language(text: str, expected: str) -> None:

@@ -69,6 +69,89 @@ def _mark_event(conn: Connection, event_pk: str, *, applied: bool, error_message
     )
 
 
+def _rz_nested_entity(payload: dict[str, Any], key: str) -> dict[str, Any] | None:
+    try:
+        wrap = payload["payload"][key]
+        ent = wrap.get("entity") if isinstance(wrap, dict) else None
+        return ent if isinstance(ent, dict) else None
+    except (KeyError, TypeError):
+        return None
+
+
+def _resolve_rz_client_from_payment(conn: Connection, ent: dict[str, Any]) -> str | None:
+    notes = _notes_dict(ent)
+    cid = _parse_uuid(notes.get("client_id"))
+    if cid:
+        return cid
+    sub_id = ent.get("subscription_id")
+    if isinstance(sub_id, str) and sub_id.strip():
+        row = conn.execute(
+            text(
+                """
+                SELECT client_id::text
+                FROM bill_subscriptions
+                WHERE provider = 'razorpay' AND external_subscription_id = :sid
+                LIMIT 1
+                """
+            ),
+            {"sid": sub_id.strip()},
+        ).fetchone()
+        if row and row[0]:
+            return str(row[0])
+    return None
+
+
+def upsert_bill_invoice(
+    conn: Connection,
+    *,
+    client_id: str,
+    provider: str,
+    external_invoice_id: str,
+    amount_minor: int | None,
+    currency: str | None,
+    status: str,
+    issued_at: Any,
+    payload: dict[str, Any],
+) -> None:
+    conn.execute(
+        text(
+            """
+            INSERT INTO bill_invoices (
+              client_id, provider, external_invoice_id, amount_minor, currency, status, issued_at, payload
+            )
+            VALUES (
+              CAST(:cid AS uuid),
+              :provider,
+              :eid,
+              :amt,
+              :cur,
+              :st,
+              :issued,
+              CAST(:payload AS jsonb)
+            )
+            ON CONFLICT (provider, external_invoice_id)
+            DO UPDATE SET
+              client_id = EXCLUDED.client_id,
+              amount_minor = COALESCE(EXCLUDED.amount_minor, bill_invoices.amount_minor),
+              currency = COALESCE(EXCLUDED.currency, bill_invoices.currency),
+              status = EXCLUDED.status,
+              issued_at = COALESCE(EXCLUDED.issued_at, bill_invoices.issued_at),
+              payload = EXCLUDED.payload
+            """
+        ),
+        {
+            "cid": client_id,
+            "provider": provider,
+            "eid": external_invoice_id,
+            "amt": amount_minor,
+            "cur": currency,
+            "st": status,
+            "issued": issued_at,
+            "payload": json.dumps(payload),
+        },
+    )
+
+
 def _notes_dict(entity: dict[str, Any] | None) -> dict[str, str]:
     if not entity:
         return {}
@@ -216,6 +299,112 @@ def process_razorpay_webhook(conn: Connection, payload: dict[str, Any]) -> dict[
         return {"status": "duplicate"}
 
     try:
+        # --- Invoice paid (renewal / charge receipt) ---
+        if ev_name == "invoice.paid":
+            inv = _rz_nested_entity(payload, "invoice")
+            if inv is None:
+                _mark_event(conn, event_row_id, applied=True, error_message="no_invoice_payload")
+                return {"status": "ignored", "reason": "no_invoice_payload"}
+            notes_i = _notes_dict(inv)
+            client_id_i = _parse_uuid(notes_i.get("client_id"))
+            if not client_id_i:
+                _mark_event(conn, event_row_id, applied=True, error_message="missing_client_id_invoice")
+                return {"status": "ignored", "reason": "missing_client_id_in_notes"}
+            inv_id = inv.get("id")
+            if not isinstance(inv_id, str) or not inv_id.strip():
+                _mark_event(conn, event_row_id, applied=True, error_message="missing_invoice_id")
+                return {"status": "ignored", "reason": "missing_invoice_id"}
+            amt_raw = inv.get("amount")
+            try:
+                amt_i = int(amt_raw) if amt_raw is not None else None
+            except (TypeError, ValueError):
+                amt_i = None
+            cur = inv.get("currency")
+            upsert_bill_invoice(
+                conn,
+                client_id=client_id_i,
+                provider="razorpay",
+                external_invoice_id=inv_id.strip(),
+                amount_minor=amt_i,
+                currency=str(cur) if cur else None,
+                status="paid",
+                issued_at=inv.get("paid_at") or inv.get("created_at"),
+                payload=inv,
+            )
+            _mark_event(conn, event_row_id, applied=True, error_message=None)
+            return {"status": "accepted"}
+
+        # --- Payment failure ---
+        if ev_name == "payment.failed":
+            pay = _rz_nested_entity(payload, "payment")
+            if pay is None:
+                _mark_event(conn, event_row_id, applied=True, error_message="no_payment_payload")
+                return {"status": "ignored", "reason": "no_payment_payload"}
+            cidp = _resolve_rz_client_from_payment(conn, pay)
+            if not cidp:
+                _mark_event(conn, event_row_id, applied=True, error_message="missing_client_payment")
+                return {"status": "ignored", "reason": "missing_client_id"}
+            _update_api_client_billing(
+                conn,
+                client_id=cidp,
+                provider="razorpay",
+                entitlement_plan="churned",
+                billing_plan_code=None,
+            )
+            sub_id = pay.get("subscription_id")
+            if isinstance(sub_id, str) and sub_id.strip():
+                conn.execute(
+                    text(
+                        """
+                        UPDATE bill_subscriptions
+                        SET status = 'payment_failed', updated_at = now(),
+                            raw_last_payload = CAST(:p AS jsonb)
+                        WHERE provider = 'razorpay' AND external_subscription_id = :sid
+                        """
+                    ),
+                    {"sid": sub_id.strip(), "p": json.dumps(pay)},
+                )
+            _mark_event(conn, event_row_id, applied=True, error_message=None)
+            return {"status": "accepted"}
+
+        # --- Refund processed ---
+        if ev_name == "refund.processed":
+            ref = _rz_nested_entity(payload, "refund")
+            if ref is None:
+                _mark_event(conn, event_row_id, applied=True, error_message="no_refund_payload")
+                return {"status": "ignored", "reason": "no_refund_payload"}
+            notes_r = _notes_dict(ref)
+            cid_r = _parse_uuid(notes_r.get("client_id"))
+            if not cid_r:
+                _mark_event(conn, event_row_id, applied=True, error_message="missing_client_refund")
+                return {"status": "ignored", "reason": "missing_client_id_in_notes"}
+            rid = ref.get("id")
+            if isinstance(rid, str) and rid.strip():
+                try:
+                    amt_r = int(ref.get("amount")) if ref.get("amount") is not None else None
+                except (TypeError, ValueError):
+                    amt_r = None
+                upsert_bill_invoice(
+                    conn,
+                    client_id=cid_r,
+                    provider="razorpay",
+                    external_invoice_id=f"refund:{rid.strip()}",
+                    amount_minor=amt_r,
+                    currency=str(ref.get("currency") or "INR"),
+                    status="refunded",
+                    issued_at=ref.get("created_at"),
+                    payload=ref,
+                )
+            _update_api_client_billing(
+                conn,
+                client_id=cid_r,
+                provider="razorpay",
+                entitlement_plan="churned",
+                billing_plan_code=None,
+            )
+            _mark_event(conn, event_row_id, applied=True, error_message=None)
+            return {"status": "accepted"}
+
         entity = _rz_subscription_entity(payload)
         if entity is None:
             _mark_event(conn, event_row_id, applied=True, error_message="no_subscription_payload")
@@ -243,7 +432,6 @@ def process_razorpay_webhook(conn: Connection, payload: dict[str, Any]) -> dict[
             "subscription.charged",
             "subscription.resumed",
             "subscription.pending",
-            "subscription.paused",
         ):
             entitlement = _entitlement_from_plan_code(plan_code, notes)
             bpc = notes.get("billing_plan_code") or plan_code or (str(plan_id) if plan_id else None)
@@ -268,8 +456,27 @@ def process_razorpay_webhook(conn: Connection, payload: dict[str, Any]) -> dict[
                 current_period_end=current_end,
                 raw_payload=entity,
             )
-        elif ev_name in ("subscription.cancelled", "subscription.completed", "subscription.paused"):
-            entitlement = "churned" if ev_name in ("subscription.cancelled", "subscription.completed") else _entitlement_from_plan_code(plan_code, notes)
+        elif ev_name in ("subscription.cancelled", "subscription.completed", "subscription.halted"):
+            entitlement = "churned"
+            _update_api_client_billing(
+                conn,
+                client_id=client_id,
+                provider="razorpay",
+                entitlement_plan=entitlement,
+                billing_plan_code=notes.get("billing_plan_code") or plan_code,
+            )
+            _upsert_subscription(
+                conn,
+                client_id=client_id,
+                provider="razorpay",
+                external_subscription_id=ext_sub,
+                status=status,
+                plan_code=plan_code,
+                current_period_end=current_end,
+                raw_payload=entity,
+            )
+        elif ev_name == "subscription.paused":
+            entitlement = _entitlement_from_plan_code(plan_code, notes)
             _update_api_client_billing(
                 conn,
                 client_id=client_id,
@@ -310,14 +517,7 @@ def _rz_subscription_entity(payload: dict[str, Any]) -> dict[str, Any] | None:
     return None
 
 
-def _paddle_subscription_data(payload: dict[str, Any]) -> dict[str, Any] | None:
-    data = payload.get("data")
-    if isinstance(data, dict) and data.get("id"):
-        return data
-    return None
-
-
-def _paddle_custom_data(data: dict[str, Any]) -> dict[str, str]:
+def _rz_subscription_entity(payload: dict[str, Any]) -> dict[str, Any] | None:
     cd = data.get("custom_data")
     if not isinstance(cd, dict):
         return {}
@@ -346,13 +546,86 @@ def process_paddle_webhook(conn: Connection, payload: dict[str, Any]) -> dict[st
         return {"status": "duplicate"}
 
     try:
-        data = _paddle_subscription_data(payload)
-        if data is None:
-            _mark_event(conn, event_row_id, applied=True, error_message="no_subscription_data")
-            return {"status": "ignored", "reason": "no_subscription_data"}
+        data = payload.get("data")
+        if not isinstance(data, dict) or not data.get("id"):
+            _mark_event(conn, event_row_id, applied=True, error_message="no_event_data")
+            return {"status": "ignored", "reason": "no_event_data"}
 
         custom = _paddle_custom_data(data)
         client_id = _parse_uuid(custom.get("client_id"))
+
+        # --- Paddle Billing: transactions (failures / paid receipts) ---
+        if ev_type.startswith("transaction."):
+            if not client_id:
+                _mark_event(conn, event_row_id, applied=True, error_message="missing_client_id_in_custom_data")
+                return {"status": "ignored", "reason": "missing_client_id_in_custom_data"}
+            tid = str(data["id"])
+            st = str(data.get("status") or "").lower()
+            if "payment_failed" in ev_type or st == "failed":
+                _update_api_client_billing(
+                    conn,
+                    client_id=client_id,
+                    provider="paddle",
+                    entitlement_plan="churned",
+                    billing_plan_code=None,
+                )
+                upsert_bill_invoice(
+                    conn,
+                    client_id=client_id,
+                    provider="paddle",
+                    external_invoice_id=tid,
+                    amount_minor=None,
+                    currency=None,
+                    status="failed",
+                    issued_at=data.get("created_at") or data.get("updated_at"),
+                    payload=data,
+                )
+                _mark_event(conn, event_row_id, applied=True, error_message=None)
+                return {"status": "accepted"}
+            if "paid" in ev_type or st in ("paid", "completed") or "completed" in ev_type.lower():
+                upsert_bill_invoice(
+                    conn,
+                    client_id=client_id,
+                    provider="paddle",
+                    external_invoice_id=tid,
+                    amount_minor=None,
+                    currency=None,
+                    status="paid",
+                    issued_at=data.get("created_at") or data.get("updated_at"),
+                    payload=data,
+                )
+                _mark_event(conn, event_row_id, applied=True, error_message=None)
+                return {"status": "accepted"}
+            _mark_event(conn, event_row_id, applied=True, error_message=f"unhandled_transaction:{ev_type}")
+            return {"status": "ignored", "reason": f"unhandled_transaction:{ev_type}"}
+
+        # --- Refunds ---
+        if ev_type.startswith("refund."):
+            if not client_id:
+                _mark_event(conn, event_row_id, applied=True, error_message="missing_client_id_in_custom_data")
+                return {"status": "ignored", "reason": "missing_client_id_in_custom_data"}
+            rid = str(data["id"])
+            upsert_bill_invoice(
+                conn,
+                client_id=client_id,
+                provider="paddle",
+                external_invoice_id=f"refund:{rid}",
+                amount_minor=None,
+                currency=None,
+                status="refunded",
+                issued_at=data.get("created_at"),
+                payload=data,
+            )
+            _update_api_client_billing(
+                conn,
+                client_id=client_id,
+                provider="paddle",
+                entitlement_plan="churned",
+                billing_plan_code=None,
+            )
+            _mark_event(conn, event_row_id, applied=True, error_message=None)
+            return {"status": "accepted"}
+
         if not client_id:
             _mark_event(conn, event_row_id, applied=True, error_message="missing_client_id_in_custom_data")
             return {"status": "ignored", "reason": "missing_client_id_in_custom_data"}

@@ -14,12 +14,15 @@ Example (PowerShell from repo root):
     $env:PYTHONPATH = "$PWD"
     python backend/tools/dev_ops_api_smoke.py --email admin@example.com --password 'YourSecret'
 
-Create a super_admin (one-time) if needed — attach to an existing client id, or use NULL client_id
-if your DB allows it for that column:
+Create a super_admin the easy way (same ``client_id`` as owner/agent):
+
+    python backend/tools/dev_seed_users.py --client-id <CLIENT_ID> --super-admin-email admin@example.com
+
+Or one-time SQL: attach to an existing client id, or use NULL ``client_id`` if your DB allows it:
 
     python -c "from backend.apps.client_api.auth import hash_password; print(hash_password('Admin!2026'))"
 
-Then INSERT into api_users with role super_admin (see HANDOFF seed flow).
+Then INSERT into ``api_users`` with role ``super_admin`` (see HANDOFF seed flow).
 """
 
 import argparse

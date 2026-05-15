@@ -9,6 +9,7 @@ class ChatListItem {
     this.lastOutboundAt,
     required this.createdAt,
     this.lastMessagePreview,
+    this.aiPausedUntil,
   });
 
   final String id;
@@ -20,6 +21,8 @@ class ChatListItem {
   final DateTime? lastOutboundAt;
   final DateTime createdAt;
   final String? lastMessagePreview;
+  /// When set, AI auto-replies are deferred until this instant (UTC from API).
+  final DateTime? aiPausedUntil;
 
   factory ChatListItem.fromJson(Map<String, dynamic> json) {
     return ChatListItem(
@@ -32,12 +35,63 @@ class ChatListItem {
       lastOutboundAt: _parseDt(json['last_outbound_at']),
       createdAt: DateTime.parse(json['created_at'] as String),
       lastMessagePreview: json['last_message_preview'] as String?,
+      aiPausedUntil: _parseDt(json['ai_paused_until']),
     );
   }
 
   static DateTime? _parseDt(Object? v) {
     if (v == null) return null;
     return DateTime.tryParse(v as String);
+  }
+}
+
+class InboxNotification {
+  const InboxNotification({
+    required this.id,
+    required this.clientId,
+    required this.recipientUserId,
+    this.chatId,
+    required this.kind,
+    required this.title,
+    this.body,
+    required this.payload,
+    this.readAt,
+    required this.createdAt,
+  });
+
+  final String id;
+  final String clientId;
+  final String recipientUserId;
+  final String? chatId;
+  final String kind;
+  final String title;
+  final String? body;
+  final Map<String, dynamic> payload;
+  final DateTime? readAt;
+  final DateTime createdAt;
+
+  factory InboxNotification.fromJson(Map<String, dynamic> json) {
+    final raw = json['payload'];
+    final Map<String, dynamic> payload;
+    if (raw is Map<String, dynamic>) {
+      payload = raw;
+    } else if (raw is Map) {
+      payload = Map<String, dynamic>.from(raw);
+    } else {
+      payload = const {};
+    }
+    return InboxNotification(
+      id: json['id'] as String,
+      clientId: json['client_id'] as String,
+      recipientUserId: json['recipient_user_id'] as String,
+      chatId: json['chat_id'] as String?,
+      kind: json['kind'] as String,
+      title: json['title'] as String,
+      body: json['body'] as String?,
+      payload: payload,
+      readAt: ChatListItem._parseDt(json['read_at']),
+      createdAt: DateTime.parse(json['created_at'] as String),
+    );
   }
 }
 

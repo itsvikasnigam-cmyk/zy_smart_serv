@@ -9,8 +9,9 @@ Drives the assign flow:
     4) owner assigns the chat to the agent
     5) agent posts a typing heartbeat
     6) agent posts a reply (mirrors inbox_messages + enqueues wa_outbox AGENT_REPLY)
-    7) reassign to owner, then unassign
-    8) prints captured WS events (if --listen-seconds > 0)
+    7) reassign to owner, then unassign (expect ``HUMAN_REQ``)
+    8) owner resolves the chat (``POST …/resolve`` → ``CLOSED``)
+    9) prints captured WS events (if --listen-seconds > 0)
 
 Usage:
     python backend/tools/dev_inbox_smoke.py \
@@ -70,6 +71,21 @@ def assign(
         f"{base_url}/inbox/chats/{chat_id}/{path}",
         headers=bearer(token),
         json={"user_id": user_id, "reason": reason},
+    )
+    r.raise_for_status()
+    return r.json()
+
+
+def resolve_chat(
+    client: httpx.Client, base_url: str, token: str, chat_id: str, reason: str | None = None
+) -> dict[str, Any]:
+    body: dict[str, Any] = {}
+    if reason:
+        body["reason"] = reason
+    r = client.post(
+        f"{base_url}/inbox/chats/{chat_id}/resolve",
+        headers=bearer(token),
+        json=body,
     )
     r.raise_for_status()
     return r.json()
@@ -189,6 +205,9 @@ async def amain() -> int:
         # 5) Owner unassigns
         r5 = unassign(client, args.base_url, owner_tok, chat_id, "wrapping up")
         print(f"[unassign] OK  state={r5.get('state')}")
+
+        r6 = resolve_chat(client, args.base_url, owner_tok, chat_id, reason="dev_inbox_smoke")
+        print(f"[resolve] OK  state={r6.get('state')}  changed={r6.get('changed')}")
 
         # Re-fetch detail for final view
         detail = get_chat(client, args.base_url, owner_tok, chat_id)

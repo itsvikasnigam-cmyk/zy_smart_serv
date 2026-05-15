@@ -6,7 +6,7 @@ import '../models/chat_models.dart';
 import '../state/session_controller.dart';
 import 'chat_detail_screen.dart';
 
-enum _InboxFilter { all, mine, unassigned, pendingAgent }
+enum _InboxFilter { all, mine, unassigned, humanQueue }
 
 class InboxChatsScreen extends StatefulWidget {
   const InboxChatsScreen({super.key});
@@ -28,7 +28,7 @@ class _InboxChatsScreenState extends State<InboxChatsScreen> {
   String? _assignedParam() {
     switch (_filter) {
       case _InboxFilter.all:
-      case _InboxFilter.pendingAgent:
+      case _InboxFilter.humanQueue:
         return null;
       case _InboxFilter.mine:
         return 'me';
@@ -38,12 +38,7 @@ class _InboxChatsScreenState extends State<InboxChatsScreen> {
   }
 
   String? _stateParam() {
-    switch (_filter) {
-      case _InboxFilter.pendingAgent:
-        return 'PENDING_AGENT';
-      default:
-        return null;
-    }
+    return null;
   }
 
   Future<void> _reloadList(SessionController session) async {
@@ -53,7 +48,10 @@ class _InboxChatsScreenState extends State<InboxChatsScreen> {
   String _activitySubtitle(ChatListItem c) {
     final t = c.lastCustomerMsgAt ?? c.lastOutboundAt ?? c.createdAt;
     final rel = DateFormat.MMMd().add_Hm().format(t.toLocal());
-    return '${c.state} · $rel · ${c.lastMessagePreview ?? '—'}';
+    final pause = c.aiPausedUntil != null && c.aiPausedUntil!.isAfter(DateTime.now())
+        ? ' · AI paused until ${DateFormat.MMMd().add_Hm().format(c.aiPausedUntil!.toLocal())}'
+        : '';
+    return '${c.state} · $rel · ${c.lastMessagePreview ?? '—'}$pause';
   }
 
   @override
@@ -117,10 +115,10 @@ class _InboxChatsScreenState extends State<InboxChatsScreen> {
               ),
               const SizedBox(width: 6),
               FilterChip(
-                label: const Text('Needs agent'),
-                selected: _filter == _InboxFilter.pendingAgent,
+                label: const Text('Needs human'),
+                selected: _filter == _InboxFilter.humanQueue,
                 onSelected: (_) =>
-                    setState(() => _filter = _InboxFilter.pendingAgent),
+                    setState(() => _filter = _InboxFilter.humanQueue),
               ),
             ],
           ),
@@ -133,6 +131,7 @@ class _InboxChatsScreenState extends State<InboxChatsScreen> {
               user: session.user!,
               assigned: _assignedParam(),
               state: _stateParam(),
+              humanQueue: _filter == _InboxFilter.humanQueue,
               phoneQuery:
                   _search.text.trim().isEmpty ? null : _search.text.trim(),
             ),
@@ -218,13 +217,15 @@ class _StateDot extends StatelessWidget {
   Color _color(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     switch (state) {
-      case 'PENDING_AGENT':
+      case 'HUMAN_REQ':
         return cs.error;
+      case 'WAITING_OWNER_DATA':
+        return cs.secondary;
       case 'AGENT_ACTIVE':
         return cs.primary;
       case 'AI_ACTIVE':
         return cs.tertiary;
-      case 'RESOLVED':
+      case 'CLOSED':
         return cs.outline;
       default:
         return cs.secondary;

@@ -16,7 +16,7 @@ Use **Connection settings** (or `--dart-define`) so the app matches where `uvico
 
 ## Super admin — SOP / Runbook (`ops_api`)
 
-Log in as **`super_admin`**. Use the **link** icon in the app bar to set **`CLIENT_API_BASE_URL`** (default `http://127.0.0.1:8085`) and **`OPS_API_BASE_URL`** (default `http://127.0.0.1:8087`). Tabs: **SOPs**, **Runs**, **Control** (read-only M8 placeholders), **Dash** (read-only `GET /dash/admin/*` on **client_api**).
+Log in as **`super_admin`**. Use the **link** icon in the app bar to set **`CLIENT_API_BASE_URL`** (default `http://127.0.0.1:8085`) and **`OPS_API_BASE_URL`** (default `http://127.0.0.1:8087`). Tabs: **SOPs**, **Runs**, **Control** (read-only M8 checklist copy + backend prerequisites), **Dash** (read-only **`GET /dash/admin/*`** — KPI chips + bar charts for dict aggregates + message rollup; **Raw JSON** per endpoint).
 
 **Auth errors**: **401** from `ops_api` → **logout**. **403** → one message (**super_admin** required); **no retry loop**.
 

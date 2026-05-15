@@ -42,3 +42,18 @@ def extract_status_events(payload: dict[str, Any]) -> list[StatusEvent]:
                 out.append(StatusEvent(meta_message_id=str(msg_id), event_type=mapped, raw=st))
     return out
 
+
+def extract_meta_errors(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """
+    Meta ``messages`` / system ``errors`` payloads (optional ``POST /webhooks/meta/errors`` sink).
+    Returns raw error dicts for append-only storage.
+    """
+    out: list[dict[str, Any]] = []
+    for entry in payload.get("entry", []) or []:
+        for change in entry.get("changes", []) or []:
+            value = change.get("value") or {}
+            for err in value.get("errors", []) or []:
+                if isinstance(err, dict):
+                    out.append(err)
+    return out
+

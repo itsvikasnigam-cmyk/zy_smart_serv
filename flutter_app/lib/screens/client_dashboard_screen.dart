@@ -20,7 +20,7 @@ const _kMockOverview = <String, dynamic>{
   'billing_provider': null,
   'trial_end': null,
   'wa_numbers_count': 1,
-  'chats_by_state': {'AI_ACTIVE': 3, 'PENDING_AGENT': 1, 'AGENT_ACTIVE': 2},
+  'chats_by_state': {'AI_ACTIVE': 3, 'HUMAN_REQ': 1, 'AGENT_ACTIVE': 2},
   'usage_today': {
     'inbound_customer_messages': 12,
     'outbound_ai_messages': 8,
@@ -46,7 +46,8 @@ const _kMockQuality = <String, dynamic>{
   'chats_pending_agent': 1,
   'chats_with_handoff_reason_7d': 2,
   'messages_last_7d': {'customer': 40, 'ai': 30, 'agent': 15, 'system': 2},
-  'notes': 'Illustrative data only — connect client_api with Chat J routes for live numbers.',
+  'notes': 'Illustrative data only — connect client_api with Chat J routes for live numbers. '
+      'chats_pending_agent counts HUMAN_REQ + WAITING_OWNER_DATA.',
 };
 
 class _ClientDashboardScreenState extends State<ClientDashboardScreen> {

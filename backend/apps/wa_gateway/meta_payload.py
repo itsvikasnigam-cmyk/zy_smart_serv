@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Any
 
@@ -10,6 +11,33 @@ def normalize_customer_phone_for_route(phone: str) -> str:
     Meta sends E.164 without '+'; keep digits only so ' +91 9.. ' and '919..' match.
     """
     return "".join(ch for ch in phone.strip() if ch.isdigit())
+
+
+def coerce_string_list_json(value: Any) -> list[str]:
+    """Normalize ops_runtime_config JSONB list / JSON string into non-empty substrings."""
+    if value is None:
+        return []
+    if isinstance(value, list):
+        out: list[str] = []
+        for item in value:
+            if isinstance(item, str) and item.strip():
+                out.append(item.strip())
+        return out
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+            return coerce_string_list_json(parsed)
+        except json.JSONDecodeError:
+            return [value.strip()]
+    return []
+
+
+def inbound_matches_urgent_substrings(text: str, substrings: list[str]) -> bool:
+    """Gateway U1: case-insensitive substring match (aligns with ai_engine key ``ai.urgent_bypass_substrings``)."""
+    if not text or not substrings:
+        return False
+    lower = text.lower()
+    return any(s.lower() in lower for s in substrings if s)
 
 
 @dataclass(frozen=True)

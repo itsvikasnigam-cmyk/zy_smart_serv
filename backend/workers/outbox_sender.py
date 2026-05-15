@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import socket
 import time
@@ -8,6 +9,7 @@ from typing import Any
 import httpx
 from sqlalchemy import text
 
+from backend.shared.broadcast_gating import validate_template_only_body
 from backend.shared.config import settings
 from backend.shared.db import engine
 
@@ -89,6 +91,65 @@ def _meta_send(phone_number_id: str, to_phone: str, body: str) -> str:
     return str(msg_id)
 
 
+def _meta_send_template(phone_number_id: str, to_phone: str, body_json: str) -> str:
+    """WhatsApp Cloud API template message (``body_json`` from ``broadcast_gating.build_template_outbox_body``)."""
+    try:
+        spec = json.loads(body_json)
+    except json.JSONDecodeError as e:
+        raise MetaSendFatal(f"TEMPLATE body is not valid JSON: {e}") from e
+    ok, err = validate_template_only_body(body_json, template_only=True)
+    if not ok:
+        raise MetaSendFatal(err)
+    name = str(spec["template_name"]).strip()
+    lang = str(spec["language"]).strip()
+    components = spec.get("components") or []
+    url = f"https://graph.facebook.com/{settings.meta_graph_version}/{phone_number_id}/messages"
+    headers = {"Authorization": f"Bearer {settings.meta_access_token}", "Content-Type": "application/json"}
+    payload: dict[str, Any] = {
+        "messaging_product": "whatsapp",
+        "to": to_phone,
+        "type": "template",
+        "template": {"name": name, "language": {"code": lang}, "components": components},
+    }
+    try:
+        with httpx.Client(timeout=25.0) as client:
+            r = client.post(url, headers=headers, json=payload)
+    except (httpx.TimeoutException, httpx.ConnectError, httpx.ReadError, httpx.RemoteProtocolError) as e:
+        raise MetaSendRetryable(f"{type(e).__name__}: {e}") from e
+
+    if r.status_code == 401:
+        _, detail = _meta_error_summary(r)
+        raise MetaSendFatal(f"HTTP 401 unauthorized ({detail})") from None
+    if r.status_code == 403:
+        _, detail = _meta_error_summary(r)
+        raise MetaSendFatal(f"HTTP 403 forbidden ({detail})") from None
+    if r.status_code == 429:
+        raise MetaSendRetryable(f"HTTP 429 rate limited: {_meta_error_summary(r)[1]}") from None
+    if r.status_code >= 500:
+        raise MetaSendRetryable(f"HTTP {r.status_code} server error: {_meta_error_summary(r)[1]}") from None
+
+    try:
+        r.raise_for_status()
+    except httpx.HTTPStatusError as e:
+        _, detail = _meta_error_summary(r)
+        if r.status_code >= 400:
+            raise MetaSendFatal(f"HTTP {r.status_code} ({detail})") from e
+
+    try:
+        data = r.json()
+    except Exception as e:
+        raise MetaSendRetryable(f"meta template send: invalid json: {e}") from e
+
+    msg_id = None
+    for m in data.get("messages") or []:
+        if m.get("id"):
+            msg_id = m["id"]
+            break
+    if not msg_id:
+        raise MetaSendRetryable(f"meta template send: missing message id in response: {repr(data)[:800]}")
+    return str(msg_id)
+
+
 def _claim_one_outbox_row() -> tuple[Any, ...] | None:
     """Atomically pick one due row and mark SENDING with a lease on next_attempt_at."""
     lease = int(settings.outbox_sending_lease_seconds)
@@ -102,6 +163,7 @@ def _claim_one_outbox_row() -> tuple[Any, ...] | None:
                     o.from_wa_number_id,
                     o.to_phone_e164,
                     o.body_text,
+                    o.kind,
                     o.attempt_count,
                     o.status AS prior_status
                   FROM wa_outbox o
@@ -125,6 +187,7 @@ def _claim_one_outbox_row() -> tuple[Any, ...] | None:
                   o.id,
                   o.to_phone_e164,
                   o.body_text,
+                  o.kind,
                   o.attempt_count,
                   w.meta_phone_number_id
                 """
@@ -179,7 +242,8 @@ def _finalize_failure_or_dead(outbox_id: Any, *, error_code: str, error_detail: 
                     UPDATE wa_outbox
                     SET status = 'DEAD',
                         last_error_code = :code,
-                        last_error_detail = :detail
+                        last_error_detail = :detail,
+                        dead_at = now()
                     WHERE id = CAST(:id AS uuid) AND status = 'SENDING'
                     """
                 ),
@@ -241,7 +305,7 @@ def run_once() -> int:
         if not row:
             break
         claimed_any = True
-        outbox_id, to_phone, body_text, _attempt_after_claim, phone_number_id = row
+        outbox_id, to_phone, body_text, kind, _attempt_after_claim, phone_number_id = row
 
         if not settings.meta_access_token:
             _finalize_missing_token(outbox_id)
@@ -251,7 +315,10 @@ def run_once() -> int:
             continue
 
         try:
-            meta_message_id = _meta_send(str(phone_number_id), str(to_phone), str(body_text))
+            if str(kind) == "TEMPLATE":
+                meta_message_id = _meta_send_template(str(phone_number_id), str(to_phone), str(body_text))
+            else:
+                meta_message_id = _meta_send(str(phone_number_id), str(to_phone), str(body_text))
         except MetaSendFatal as e:
             _finalize_failure_or_dead(
                 outbox_id,

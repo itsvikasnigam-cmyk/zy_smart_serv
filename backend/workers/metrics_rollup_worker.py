@@ -106,6 +106,8 @@ def rollup_hourly_system(conn: Connection, hours: list[datetime]) -> None:
                   agent_out_messages,
                   wa_outbox_rows_created,
                   wa_outbox_rows_dead,
+                  billing_webhook_process_errors,
+                  wa_meta_webhook_errors,
                   updated_at
                 )
                 SELECT
@@ -132,7 +134,15 @@ def rollup_hourly_system(conn: Connection, hours: list[datetime]) -> None:
                   COALESCE((
                     SELECT COUNT(*)::int FROM wa_outbox o
                     WHERE o.status = 'DEAD'
-                      AND date_trunc('hour', timezone('utc', o.created_at)) = CAST(:hb AS timestamptz)
+                      AND date_trunc('hour', timezone('utc', COALESCE(o.dead_at, o.created_at))) = CAST(:hb AS timestamptz)
+                  ), 0),
+                  COALESCE((
+                    SELECT COUNT(*)::int FROM bill_webhook_processing_errors e
+                    WHERE date_trunc('hour', timezone('utc', e.created_at)) = CAST(:hb AS timestamptz)
+                  ), 0),
+                  COALESCE((
+                    SELECT COUNT(*)::int FROM wa_meta_webhook_errors e
+                    WHERE date_trunc('hour', timezone('utc', e.received_at)) = CAST(:hb AS timestamptz)
                   ), 0),
                   now()
                 ON CONFLICT (hour_bucket_utc) DO UPDATE SET
@@ -141,6 +151,8 @@ def rollup_hourly_system(conn: Connection, hours: list[datetime]) -> None:
                   agent_out_messages = EXCLUDED.agent_out_messages,
                   wa_outbox_rows_created = EXCLUDED.wa_outbox_rows_created,
                   wa_outbox_rows_dead = EXCLUDED.wa_outbox_rows_dead,
+                  billing_webhook_process_errors = EXCLUDED.billing_webhook_process_errors,
+                  wa_meta_webhook_errors = EXCLUDED.wa_meta_webhook_errors,
                   updated_at = now()
                 """
             ),

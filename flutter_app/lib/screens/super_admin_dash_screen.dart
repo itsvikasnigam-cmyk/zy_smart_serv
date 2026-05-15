@@ -5,8 +5,10 @@ import 'package:provider/provider.dart';
 
 import '../services/client_api_repository.dart';
 import '../state/session_controller.dart';
+import '../widgets/dash_bar_charts.dart';
 
-/// Read-only **Chat J** admin aggregates (`GET /dash/admin/*`) on `client_api`.
+/// Read-only **Chat J** admin aggregates (`GET /dash/admin/*`) on `client_api`
+/// with **phase-1 charts** (dict counts + message rollup bar) where JSON shape matches backend models.
 class SuperAdminDashScreen extends StatefulWidget {
   const SuperAdminDashScreen({super.key});
 
@@ -73,6 +75,96 @@ class _SuperAdminDashScreenState extends State<SuperAdminDashScreen> {
     }
   }
 
+  Widget _chartBodyForPath(String path, Map<String, dynamic> d) {
+    switch (path) {
+      case '/dash/admin/overview':
+        return _OverviewCharts(data: d);
+      case '/dash/admin/collections':
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            if (d['notes'] != null && d['notes'].toString().trim().isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Text(
+                  d['notes'].toString(),
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ),
+            DashKpiRow(
+              items: [
+                (label: 'Active subscriptions', value: dashAsInt(d['active_subscriptions'])),
+                (label: 'MRR stub (minor units)', value: dashAsInt(d['estimated_mrr_minor_units'])),
+              ],
+            ),
+            const SizedBox(height: 12),
+            DashDictBarCard(title: 'By provider', data: dashIntMapFromJson(d['by_provider'])),
+            DashDictBarCard(title: 'By status', data: dashIntMapFromJson(d['by_status'])),
+          ],
+        );
+      case '/dash/admin/providers/razorpay':
+      case '/dash/admin/providers/paddle':
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            DashKpiRow(
+              items: [
+                (label: 'Events (7d)', value: dashAsInt(d['events_last_7d'])),
+                (label: 'Plans configured', value: dashAsInt(d['plans_configured'])),
+              ],
+            ),
+            const SizedBox(height: 12),
+            DashDictBarCard(
+              title: 'Subscriptions by status',
+              data: dashIntMapFromJson(d['subscriptions_by_status']),
+            ),
+          ],
+        );
+      case '/dash/admin/ops/whatsapp':
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            DashDictBarCard(title: 'WA numbers by type', data: dashIntMapFromJson(d['wa_numbers_by_type'])),
+            DashDictBarCard(title: 'Outbox by status', data: dashIntMapFromJson(d['outbox_by_status'])),
+            DashDictBarCard(title: 'Outbox by kind', data: dashIntMapFromJson(d['outbox_by_kind'])),
+          ],
+        );
+      case '/dash/admin/geo':
+        final rows = d['rows'];
+        final geo = <String, int>{};
+        if (rows is List) {
+          for (final r in rows) {
+            if (r is Map) {
+              final cc = r['country_code']?.toString() ?? '?';
+              geo[cc] = dashAsInt(r['wa_numbers']);
+            }
+          }
+        }
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            if (d['notes'] != null && d['notes'].toString().trim().isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Text(
+                  d['notes'].toString(),
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ),
+            DashDictBarCard(title: 'WA numbers by country', data: geo, maxRows: 24),
+          ],
+        );
+      default:
+        return const SizedBox.shrink();
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -94,15 +186,22 @@ class _SuperAdminDashScreenState extends State<SuperAdminDashScreen> {
           if (i == 0) {
             return Padding(
               padding: const EdgeInsets.only(bottom: 16),
-              child: Text(
-                'Read-only aggregates from client_api. Empty or zero sections are normal until workers and billing data exist.',
-                style: theme.textTheme.bodyMedium?.copyWith(
-                  color: theme.colorScheme.onSurfaceVariant,
-                ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Charts track live `GET /dash/admin/*` JSON from client_api (Chat J). '
+                    'Zeros / empty dicts are normal until billing, workers, and metrics populate.',
+                    style: theme.textTheme.bodyMedium?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                ],
               ),
             );
           }
           final ep = _endpoints[i - 1];
+          final d = ep.data;
           return Card(
             margin: const EdgeInsets.only(bottom: 12),
             child: ExpansionTile(
@@ -119,7 +218,7 @@ class _SuperAdminDashScreenState extends State<SuperAdminDashScreen> {
                     padding: const EdgeInsets.all(16),
                     child: Text(ep.error!, style: TextStyle(color: theme.colorScheme.error)),
                   )
-                else if (ep.data == null)
+                else if (d == null)
                   Padding(
                     padding: const EdgeInsets.all(8),
                     child: FilledButton.tonal(
@@ -129,10 +228,40 @@ class _SuperAdminDashScreenState extends State<SuperAdminDashScreen> {
                   )
                 else
                   Padding(
-                    padding: const EdgeInsets.all(12),
-                    child: SelectableText(
-                      const JsonEncoder.withIndent('  ').convert(ep.data),
-                      style: theme.textTheme.bodySmall?.copyWith(fontFamily: 'monospace'),
+                    padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        _chartBodyForPath(ep.path, d),
+                        const SizedBox(height: 8),
+                        Align(
+                          alignment: Alignment.centerLeft,
+                          child: TextButton.icon(
+                            onPressed: () {
+                              showDialog<void>(
+                                context: context,
+                                builder: (ctx) => AlertDialog(
+                                  title: const Text('Raw JSON'),
+                                  content: SingleChildScrollView(
+                                    child: SelectableText(
+                                      const JsonEncoder.withIndent('  ').convert(d),
+                                      style: theme.textTheme.bodySmall?.copyWith(fontFamily: 'monospace'),
+                                    ),
+                                  ),
+                                  actions: [
+                                    TextButton(
+                                      onPressed: () => Navigator.pop(ctx),
+                                      child: const Text('Close'),
+                                    ),
+                                  ],
+                                ),
+                              );
+                            },
+                            icon: const Icon(Icons.code),
+                            label: const Text('Raw JSON'),
+                          ),
+                        ),
+                      ],
                     ),
                   ),
               ],
@@ -140,6 +269,47 @@ class _SuperAdminDashScreenState extends State<SuperAdminDashScreen> {
           );
         },
       ),
+    );
+  }
+}
+
+class _OverviewCharts extends StatelessWidget {
+  const _OverviewCharts({required this.data});
+
+  final Map<String, dynamic> data;
+
+  @override
+  Widget build(BuildContext context) {
+    final hourly = data['hourly_system_last_24h'];
+    final dead48 = dashAsInt(data['hourly_outbox_dead_last_48h']);
+    final created48 = dashAsInt(data['hourly_outbox_created_last_48h']);
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        DashKpiRow(
+          items: [
+            (label: 'Clients', value: dashAsInt(data['total_clients'])),
+            (label: 'Chats', value: dashAsInt(data['total_chats'])),
+            (label: 'WA numbers', value: dashAsInt(data['total_wa_numbers'])),
+            (label: 'Outbox created (48h)', value: created48),
+            (label: 'Outbox → DEAD (48h)', value: dead48),
+          ],
+        ),
+        const SizedBox(height: 12),
+        DashMessageTotalsCard(
+          title: 'Messages (rolled up, last 24h UTC)',
+          raw: hourly,
+        ),
+        DashDictBarCard(
+          title: 'Clients by entitlement',
+          data: dashIntMapFromJson(data['clients_by_entitlement']),
+        ),
+        DashDictBarCard(
+          title: 'Outbox by status (backlog / health)',
+          data: dashIntMapFromJson(data['outbox_by_status']),
+        ),
+      ],
     );
   }
 }

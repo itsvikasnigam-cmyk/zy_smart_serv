@@ -1,0 +1,14 @@
+{
+  "description": "Full AIResponse keys expected by batch_processor (httpx r.json())",
+  "response": {
+    "action": "REPLY",
+    "reply_text": "Hello",
+    "intent": "general_ack",
+    "routing_intent": "general",
+    "confidence": 0.72,
+    "language": "en",
+    "handoff_reason": null,
+    "missing_fields": [],
+    "risk_reason": null
+  }
+}

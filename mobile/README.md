@@ -4,7 +4,7 @@ Cross-platform UI for **client_api** (M3/M4): JWT login, **owner** / **agent** i
 
 ## Owner / agent (Chat G)
 
-Tabs: **Inbox** · **Dashboard** · **Settings**. **Dashboard** loads overview, agents, and quality from **`/dash/client/*`**. If those routes are missing (**404**), the UI shows an **offline preview** so shells stay testable. **Super admin** scoped inbox: set **client UUID** under **Settings** before opening **Inbox**.
+Tabs: **Inbox** · **Dashboard** · **Settings**. **Dashboard** loads overview, agents, and quality from **`/dash/client/*`**. If those routes are missing (**404**), the UI shows an **offline preview** so shells stay testable.
 
 ## Prerequisites
 
@@ -42,7 +42,7 @@ flutter run -d windows --dart-define=CLIENT_API_BASE_URL=http://127.0.0.1:8085 -
 
 ## Super admin
 
-After login as **super_admin**, the app shows the **Super admin** shell: **SOPs**, **Runs**, **Control** (read-only M8 placeholders), **Dash** (`GET /dash/admin/*` on **client_api**). **401** from either API logs you out; **403** from `ops_api` shows a one-shot **needs super_admin** message (no retry loop).
+After login as **super_admin**, the app shows the **Super admin** shell: **SOPs**, **Runs**, **Control** (read-only M8 checklist + backend prerequisites), **Dash** (`GET /dash/admin/*` — KPI chips, bar charts for dict aggregates, stacked message rollup, **Raw JSON** per endpoint). **401** from either API logs you out; **403** from `ops_api` shows a one-shot **needs super_admin** message (no retry loop).
 
 ## Run
 

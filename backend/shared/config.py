@@ -21,6 +21,14 @@ class Settings(BaseSettings):
         description="Required for outbox_sender: Graph API version segment in https://graph.facebook.com/{version}/… (e.g. v22.0)",
     )
 
+    wa_gateway_allow_client_id_header: bool = Field(
+        default=False,
+        description=(
+            "When true, wa_gateway accepts X-ZY-Client-Id as a last-resort client route in dev-like setups. "
+            "Keep false in staging/prod; prefer wa_numbers + wa_trial_map routing only."
+        ),
+    )
+
     outbox_max_attempts: int = Field(default=15, ge=1, description="Outbox: after this many failed send attempts, row is marked DEAD")
     outbox_sending_lease_seconds: int = Field(
         default=120,
@@ -47,6 +55,14 @@ class Settings(BaseSettings):
         default="*",
         description="Comma-separated CORS origins for client_api (set explicit origins in non-dev).",
     )
+    client_api_ws_allowed_origins: str = Field(
+        default="",
+        description=(
+            "Comma-separated browser Origin values allowed for GET /ws (exact string match after trim). "
+            "Empty means do not enforce Origin (typical in local dev). Set explicit https://… origins in "
+            "staging/production so only your web apps may open a socket; pair with WSS and short-lived JWTs."
+        ),
+    )
 
     # ops_api (M9: SOP / Runbook Center — same JWT as client_api)
     ops_api_cors_origins: str = Field(
@@ -62,6 +78,30 @@ class Settings(BaseSettings):
     billing_paddle_webhook_secret: str = Field(
         default="",
         description="Paddle Billing notification destination secret. Required to accept POST /webhooks/paddle.",
+    )
+    billing_razorpay_key_id: str = Field(
+        default="",
+        description="Razorpay Key ID for REST API (create order / checkout). Not the webhook secret.",
+    )
+    billing_razorpay_key_secret: str = Field(
+        default="",
+        description="Razorpay Key Secret for REST API. Keep out of git; use env / secrets manager.",
+    )
+    billing_paddle_api_key: str = Field(
+        default="",
+        description="Paddle Billing API key (Bearer) for POST /transactions (create-checkout).",
+    )
+    billing_paddle_environment: str = Field(
+        default="sandbox",
+        description="paddle environment: sandbox|production (selects api.paddle.com vs sandbox-api.paddle.com).",
+    )
+    billing_paddle_api_version: str = Field(
+        default="1",
+        description="Paddle-Version header value for Billing API requests (provider default often 1).",
+    )
+    billing_api_cors_origins: str = Field(
+        default="*",
+        description="Comma-separated CORS origins for billing_api REST (checkout from browser).",
     )
 
     # Chat K: usage_increment_worker + metrics_rollup_worker (see HANDOFF.md)
@@ -92,6 +132,42 @@ class Settings(BaseSettings):
         ge=1,
         le=168,
         description="Number of recent UTC hour buckets metrics_hourly_system refreshes each cycle.",
+    )
+
+    broadcast_worker_sleep_seconds: float = Field(
+        default=2.0,
+        ge=0.5,
+        description="Sleep between broadcast_campaign_worker ticks when idle or after errors.",
+    )
+    broadcast_worker_batch_size: int = Field(
+        default=50,
+        ge=1,
+        le=500,
+        description="Max wa_broadcast_targets rows processed per campaign tick.",
+    )
+    alert_eval_worker_sleep_seconds: float = Field(
+        default=120.0,
+        ge=15.0,
+        description="Sleep between alert_eval_worker evaluations (M7 spike → ops_alert_events).",
+    )
+
+    # ai_engine (M1): optional OpenAI-compatible chat completions (primary + judge).
+    # When AI_LLM_API_KEY is empty, /ai/respond stays on deterministic routing for all paths.
+    ai_llm_base_url: str = Field(
+        default="https://api.openai.com/v1",
+        description="Base URL for OpenAI-compatible Chat Completions (no trailing path).",
+    )
+    ai_llm_api_key: str = Field(
+        default="",
+        description="Bearer API key for LLM calls. Never commit; set via env AI_LLM_API_KEY.",
+    )
+    ai_llm_primary_model: str = Field(
+        default="gpt-4o-mini",
+        description="Model id for the primary customer reply (Chat Completions).",
+    )
+    ai_llm_judge_model: str = Field(
+        default="gpt-4o-mini",
+        description="Model id for the optional quality judge pass.",
     )
 
 

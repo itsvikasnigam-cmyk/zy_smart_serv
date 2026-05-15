@@ -14,13 +14,17 @@ Topology:
       ``message_new``
     * ``wa_outbox`` for new AI_REPLY / AGENT_REPLY / OWNER_ALERT rows → ``message_new``
     * ``chat_assignments`` for new rows → ``assignment_changed``
+    * ``inbox_notifications`` for new rows → ``notification`` (in-app + cross-process fan-out)
   Watermarks are kept in-memory; on startup we anchor to ``now()`` so we don't
   fan out historical state. Note: cross-process ``chat_state_changed`` is not
   detected here yet; in-process endpoints publish it directly. ``batch_processor``
   emits ``pg_notify('zy_chat_events', …)`` on HANDOFF / NEEDS_OWNER_DATA; use
   ``python backend/tools/dev_listen_chat_events.py`` to watch payloads locally.
   The in-process ``DBPoller`` remains the default fan-out for ``inbox_messages`` /
-  ``wa_outbox`` / ``chat_assignments`` until a LISTEN bridge replaces polling.
+  ``wa_outbox`` / ``chat_assignments`` / ``inbox_notifications`` until a LISTEN
+  bridge replaces polling. Do not ``hub.publish('notification', …)`` from REST
+  handlers for rows also inserted into ``inbox_notifications`` — that would
+  duplicate the poller-delivered event for in-process subscribers.
 """
 
 import asyncio
@@ -41,6 +45,7 @@ EVENT_MESSAGE_NEW = "message_new"
 EVENT_ASSIGNMENT_CHANGED = "assignment_changed"
 EVENT_TYPING = "typing"
 EVENT_CHAT_STATE_CHANGED = "chat_state_changed"
+EVENT_NOTIFICATION = "notification"
 
 _QUEUE_MAX = 256
 
@@ -117,9 +122,11 @@ class DBPoller:
         self._wm_inbox_msg: datetime | None = None
         self._wm_outbox: datetime | None = None
         self._wm_assignment: datetime | None = None
+        self._wm_notification: datetime | None = None
         self._seen_msg: list[str] = []
         self._seen_outbox: list[str] = []
         self._seen_assignment: list[str] = []
+        self._seen_notification: list[str] = []
 
     def start(self) -> None:
         if self._task and not self._task.done():
@@ -142,6 +149,7 @@ class DBPoller:
         self._wm_inbox_msg = anchor
         self._wm_outbox = anchor
         self._wm_assignment = anchor
+        self._wm_notification = anchor
         logger.info("client_api DBPoller started (interval=%.2fs)", self.poll_seconds)
         while not self._stop.is_set():
             t0 = time.monotonic()
@@ -171,6 +179,7 @@ class DBPoller:
         self._poll_inbox_messages()
         self._poll_outbox()
         self._poll_assignments()
+        self._poll_notifications()
 
     def _poll_inbox_messages(self) -> None:
         wm = self._wm_inbox_msg
@@ -317,6 +326,49 @@ class DBPoller:
                 },
             )
         self._wm_assignment = max_ts
+
+    def _poll_notifications(self) -> None:
+        wm = self._wm_notification
+        if wm is None:
+            return
+        with engine.begin() as conn:
+            rows = conn.execute(
+                text(
+                    """
+                    SELECT id::text, client_id::text, recipient_user_id::text, chat_id::text,
+                           kind, title, body, created_at
+                    FROM inbox_notifications
+                    WHERE created_at >= :wm
+                    ORDER BY created_at ASC
+                    LIMIT 200
+                    """
+                ),
+                {"wm": wm},
+            ).all()
+        max_ts = wm
+        for r in rows:
+            row_id = r[0]
+            if not self._remember(self._seen_notification, row_id):
+                continue
+            ts = r[7]
+            if ts and ts > max_ts:
+                max_ts = ts
+            client_id = r[1]
+            hub.publish(
+                client_id,
+                EVENT_NOTIFICATION,
+                {
+                    "client_id": client_id,
+                    "notification_id": row_id,
+                    "recipient_user_id": r[2],
+                    "kind": r[4],
+                    "title": r[5],
+                    "body": r[6],
+                    "chat_id": r[3],
+                    "created_at": ts.isoformat() if ts else None,
+                },
+            )
+        self._wm_notification = max_ts
 
 
 poller = DBPoller()

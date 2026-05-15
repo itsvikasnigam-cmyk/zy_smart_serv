@@ -9,6 +9,8 @@ Manual / staging verification:
   3. PowerShell:
        $env:RUN_WA_GATEWAY_E2E="1"
        $env:ZY_E2E_META_PHONE_NUMBER_ID="<numeric id from dev_seed>"
+       # Optional: only if you route via X-ZY-Client-Id without wa_numbers / wa_trial_map rows:
+       # $env:WA_GATEWAY_ALLOW_CLIENT_ID_HEADER="true"
        python -m pytest tests/test_gateway_e2e_optional.py -v
 
 Automated Postgres in Docker (testcontainers) is not wired yet; use the steps above

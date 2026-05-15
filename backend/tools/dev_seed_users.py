@@ -7,9 +7,13 @@ Idempotent: re-running updates the password hash for existing emails.
 Usage:
     python backend/tools/dev_seed_users.py --client-id <CLIENT_UUID> \
         [--owner-email owner1@example.com] [--owner-password Owner!2026] \
-        [--agent-email agent1@example.com] [--agent-password Agent!2026]
+        [--agent-email agent1@example.com] [--agent-password Agent!2026] \
+        [--super-admin-email admin@example.com] [--super-admin-password Admin!2026]
 
-Prints OWNER_USER_ID and AGENT_USER_ID so other scripts can pick them up.
+Optional ``--super-admin-email`` upserts a ``super_admin`` on the same ``client_id`` (for
+``dev_ops_api_smoke.py`` and Flutter super-admin against ``ops_api``).
+
+Prints user ids and credentials so other scripts can pick them up.
 """
 
 import argparse
@@ -63,6 +67,12 @@ def main() -> int:
     p.add_argument("--owner-password", default="Owner!2026")
     p.add_argument("--agent-email", default="agent1@example.com")
     p.add_argument("--agent-password", default="Agent!2026")
+    p.add_argument(
+        "--super-admin-email",
+        default="",
+        help="If set, also upsert a super_admin user on the same client_id (for ops_api smoke).",
+    )
+    p.add_argument("--super-admin-password", default="Admin!2026")
     args = p.parse_args()
 
     with engine.begin() as conn:
@@ -90,6 +100,16 @@ def main() -> int:
             role="agent",
             password=args.agent_password,
         )
+        super_admin_id: str | None = None
+        if (args.super_admin_email or "").strip():
+            super_admin_id = upsert_user(
+                conn,
+                client_id=args.client_id,
+                name="Super Admin",
+                email=(args.super_admin_email or "").strip(),
+                role="super_admin",
+                password=args.super_admin_password,
+            )
 
     print(f"CLIENT_ID={args.client_id}")
     print(f"OWNER_USER_ID={owner_id}")
@@ -98,6 +118,10 @@ def main() -> int:
     print(f"AGENT_USER_ID={agent_id}")
     print(f"AGENT_EMAIL={args.agent_email}")
     print(f"AGENT_PASSWORD={args.agent_password}")
+    if super_admin_id:
+        print(f"SUPER_ADMIN_USER_ID={super_admin_id}")
+        print(f"SUPER_ADMIN_EMAIL={(args.super_admin_email or '').strip()}")
+        print(f"SUPER_ADMIN_PASSWORD={args.super_admin_password}")
     return 0
 
 

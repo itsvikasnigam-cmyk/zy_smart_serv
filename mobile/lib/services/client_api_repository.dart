@@ -104,11 +104,15 @@ class ClientApiRepository {
     String? state,
     String? assigned,
     String? phoneQuery,
+    bool humanQueue = false,
   }) async {
     final q = <String, String>{'limit': '$limit'};
     final extra = _clientQuery(user.role, superClientId);
     if (extra != null) {
       q.addAll(extra);
+    }
+    if (humanQueue) {
+      q['human_queue'] = 'true';
     }
     if (state != null && state.isNotEmpty) {
       q['state'] = state;
@@ -148,6 +152,81 @@ class ClientApiRepository {
       throw ApiException(res.statusCode, res.body);
     }
     return ChatDetail.fromJson(jsonDecode(res.body) as Map<String, dynamic>);
+  }
+
+  Future<List<InboxNotification>> listNotifications({
+    required String token,
+    required UserModel user,
+    String? superClientId,
+    int limit = 50,
+    bool unreadOnly = false,
+  }) async {
+    final q = <String, String>{'limit': '$limit'};
+    if (unreadOnly) {
+      q['unread_only'] = 'true';
+    }
+    final extra = _clientQuery(user.role, superClientId);
+    if (extra != null) {
+      q.addAll(extra);
+    }
+    final uri = config.rest('/inbox/notifications', q);
+    final res = await http.get(uri, headers: _headers(token));
+    if (res.statusCode != 200) {
+      throw ApiException(res.statusCode, res.body);
+    }
+    final map = jsonDecode(res.body) as Map<String, dynamic>;
+    final items = map['items'] as List<dynamic>;
+    return items
+        .map((e) => InboxNotification.fromJson(e as Map<String, dynamic>))
+        .toList();
+  }
+
+  Future<void> postNotificationRead({
+    required String token,
+    required UserModel user,
+    required String notificationId,
+    String? superClientId,
+  }) async {
+    final q = <String, String>{};
+    final extra = _clientQuery(user.role, superClientId);
+    if (extra != null) {
+      q.addAll(extra);
+    }
+    final uri = config.rest(
+      '/inbox/notifications/$notificationId/read',
+      q.isEmpty ? null : q,
+    );
+    final res = await http.post(uri, headers: _headers(token));
+    if (res.statusCode != 200) {
+      throw ApiException(res.statusCode, res.body);
+    }
+  }
+
+  Future<void> postResolve({
+    required String token,
+    required UserModel user,
+    required String chatId,
+    String? superClientId,
+    String? reason,
+  }) async {
+    final q = <String, String>{};
+    final extra = _clientQuery(user.role, superClientId);
+    if (extra != null) {
+      q.addAll(extra);
+    }
+    final uri = config.rest('/inbox/chats/$chatId/resolve', q.isEmpty ? null : q);
+    final body = <String, dynamic>{};
+    if (reason != null && reason.isNotEmpty) {
+      body['reason'] = reason;
+    }
+    final res = await http.post(
+      uri,
+      headers: _headers(token),
+      body: jsonEncode(body),
+    );
+    if (res.statusCode != 200) {
+      throw ApiException(res.statusCode, res.body);
+    }
   }
 
   Future<void> postAssign({
