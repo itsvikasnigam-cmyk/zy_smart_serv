@@ -26,6 +26,7 @@ from fastapi.responses import PlainTextResponse
 from backend.shared.config import settings
 from backend.shared.db import db_ping
 
+from .routes_extended import router as ops_extended_router
 from .routes_ops import router as ops_router
 
 
@@ -68,3 +69,4 @@ def ready() -> str:
 
 
 app.include_router(ops_router)
+app.include_router(ops_extended_router)

@@ -39,11 +39,8 @@ def test_insert_ops_alert_event_mock_conn() -> None:
     """Smoke: single execute path + IntegrityError swallowed by caller pattern."""
 
     class _R:
-        def __init__(self) -> None:
-            self.sql: str | None = None
-
-        def scalar_one(self) -> int:
-            return 0
+        def fetchone(self) -> tuple[str]:
+            return ("evt-1",)
 
     class _Conn:
         def __init__(self) -> None:
@@ -54,7 +51,7 @@ def test_insert_ops_alert_event_mock_conn() -> None:
             return _R()
 
     c = _Conn()
-    insert_ops_alert_event(
+    inserted, eid = insert_ops_alert_event(
         c,  # type: ignore[arg-type]
         alert_type="TEST",
         severity="info",
@@ -63,3 +60,5 @@ def test_insert_ops_alert_event_mock_conn() -> None:
         dedupe_key=None,
     )
     assert c.calls == 1
+    assert inserted is True
+    assert eid == "evt-1"

@@ -18,6 +18,7 @@ from sqlalchemy.exc import ProgrammingError
 from backend.shared.config import settings
 from backend.shared.db import engine
 from backend.shared.ops_alerts import insert_ops_alert_event
+from backend.shared.ops_sop_auto_trigger import maybe_create_auto_sop_run
 
 log = logging.getLogger("alert_eval_worker")
 
@@ -79,7 +80,7 @@ def run_once() -> None:
         if dead_cnt >= dead_min:
             slot = _window_floor_key(now, window_minutes=dead_m)
             dk = f"outbox_dead_spike:{slot}"
-            inserted = insert_ops_alert_event(
+            inserted, event_id = insert_ops_alert_event(
                 conn,
                 alert_type="OUTBOX_DEAD_SPIKE",
                 severity="error",
@@ -89,6 +90,12 @@ def run_once() -> None:
             )
             if inserted:
                 log.error("alert OUTBOX_DEAD_SPIKE count=%s window_min=%s", dead_cnt, dead_m)
+                maybe_create_auto_sop_run(
+                    conn,
+                    alert_type="OUTBOX_DEAD_SPIKE",
+                    ops_alert_event_id=event_id,
+                    detail={"count": dead_cnt, "window_minutes": dead_m},
+                )
 
         meta_m = int(th.get("meta_webhook_errors_spike_window_minutes") or 60)
         meta_min = int(th.get("meta_webhook_errors_spike_min_count") or 50)
@@ -111,7 +118,7 @@ def run_once() -> None:
         if meta_cnt >= meta_min:
             slot = _window_floor_key(now, window_minutes=meta_m)
             dk = f"meta_webhook_errors_spike:{slot}"
-            inserted = insert_ops_alert_event(
+            inserted, event_id = insert_ops_alert_event(
                 conn,
                 alert_type="META_WEBHOOK_ERROR_SPIKE",
                 severity="warning",
@@ -121,6 +128,12 @@ def run_once() -> None:
             )
             if inserted:
                 log.error("alert META_WEBHOOK_ERROR_SPIKE count=%s window_min=%s", meta_cnt, meta_m)
+                maybe_create_auto_sop_run(
+                    conn,
+                    alert_type="META_WEBHOOK_ERROR_SPIKE",
+                    ops_alert_event_id=event_id,
+                    detail={"count": meta_cnt, "window_minutes": meta_m},
+                )
 
 
 def main() -> None:

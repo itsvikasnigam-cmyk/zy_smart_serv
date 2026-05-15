@@ -211,3 +211,38 @@ def billing_kyc_india_submit(
             {"payload": json.dumps(submission.data), "cid": cid},
         )
     return {"ok": True}
+
+
+class KycReviewIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: str = Field(pattern=r"^(verified|rejected)$")
+    reason: str | None = Field(default=None, max_length=500)
+
+
+@router.post("/kyc/india/{client_id}/review")
+def billing_kyc_india_review(
+    client_id: str,
+    body: KycReviewIn,
+    user: CurrentUser = Depends(require_roles(ROLE_SUPER_ADMIN)),
+) -> dict[str, Any]:
+    """Super-admin: mark India KYC verified or rejected."""
+    with engine.begin() as conn:
+        row = conn.execute(
+            text("SELECT 1 FROM api_clients WHERE id = CAST(:cid AS uuid)"),
+            {"cid": client_id},
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="client not found")
+        conn.execute(
+            text(
+                """
+                UPDATE api_clients
+                SET kyc_status = :st,
+                    kyc_verified_at = CASE WHEN :st = 'verified' THEN now() ELSE kyc_verified_at END
+                WHERE id = CAST(:cid AS uuid)
+                """
+            ),
+            {"cid": client_id, "st": body.status},
+        )
+    return {"ok": True, "client_id": client_id, "kyc_status": body.status, "reviewed_by": user.id}

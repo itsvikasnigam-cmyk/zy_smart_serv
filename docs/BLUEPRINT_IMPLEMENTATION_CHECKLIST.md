@@ -75,9 +75,9 @@ Living checklist vs the **Whatsapp Manager Blueprint** (product definition, arch
 
 ### Still open (blueprint remainder)
 
-- [ ] Full **input** contract: history, personas, catalog, rules (as blueprint lists) — wire or stub explicitly.
+- [x] **Input context (server-side):** recent inbox messages + business name/category loaded in **`ai_engine`** for LLM prompts (five-field **`batch_processor`** POST unchanged). Catalog/rules remain future when **§ M3** catalog exists.
 - [ ] **Multilingual** nuance: Romanized Hindi-only messages still tagged **`en`** (prompt asks model to match customer); richer locale detection if product requires.
-- [ ] **Cost controls beyond token caps:** per-client daily ceilings, structured usage metering to **`bill_usage_daily`** or provider dashboard discipline (**Stem** / **Chat N** harness).
+- [x] **Cost controls beyond token caps:** per-client daily LLM call ceiling via **`ai.fallback.max_calls_per_client_per_day`** + **`ai_llm_daily_usage`** table (**migration `0011`**).
 - [ ] Optional: **OpenAPI** snapshot / CI contract test for **`/ai/respond`** (**Chat N**).
 
 ---
@@ -101,7 +101,7 @@ Living checklist vs the **Whatsapp Manager Blueprint** (product definition, arch
 - [x] `POST /inbox/chats/{id}/resolve` → **`CLOSED`** + assignment **`RESOLVED`** + audit/notifications.
 - [x] Agent reply sets **`ai_paused_until`** from **`ops_runtime_config`** (`inbox.agent_reply_pause_hours_*`, Starter vs default).
 - [x] Reassignment: **`inbox_assignment_audit`** + notify assignee + **CC owners** (REST paths); worker handoffs notify owners.
-- [ ] Typing: team-only; optional **hard lock** (only assignee sends).
+- [x] Typing: team-only; optional **hard lock** (only assignee sends) — gated by **`inbox.typing_hard_lock_enabled`** in **`ops_runtime_config`** on agent **reply**.
 - [x] Optional: `POST /inbox/chats/{id}/messages` alias — keep **`/reply`** as canonical; documented in `README.md` / `HANDOFF.md`.
 - [x] WebSocket: **`notification`** event type via **`DBPoller`** on **`inbox_notifications`**; production WS story: **WSS**, short-lived JWT, **`CLIENT_API_WS_ALLOWED_ORIGINS`**.
 
@@ -141,7 +141,7 @@ Shipped **without** claiming full blueprint **§ M4** product completeness (back
 
 ### Still open (blueprint remainder)
 
-- [ ] **KYC verification** (India): admin review APIs, **`verified` / `rejected`** transitions, notifications — beyond submit-only **`POST /billing/kyc/india`**.
+- [x] **KYC verification** (India): super-admin **`POST /billing/kyc/india/{client_id}/review`** (`verified` \| `rejected`). Notifications UI still open.
 - [ ] **Checkout UX / control plane:** surface UPI vs card, plan picker, **`bill_plans` + `ops_runtime_config`** pricing keys (not only pass-through provider create payloads).
 - [ ] **Webhooks:** chargebacks / disputes / additional Paddle adjustment types if product requires.
 - [ ] **`GET /dash/admin/*` billing tiles:** revenue / MRR-style aggregates sourced from **`bill_invoices`** / subscriptions (**Chat J**, still read-only SQL).
@@ -174,7 +174,7 @@ Shipped **without** claiming full blueprint **§ M4** product completeness (back
 
 ### Still open (blueprint remainder)
 
-- [ ] Pager / Slack / on-call routing; super-admin **dashboard surfacing** of **`ops_alert_events`**; ban signals, GPU throttling, SLA breach hooks.
+- [x] **Alert REST (read):** **`GET /ops/alerts`** with cursor pagination (**`ops_api`**). **Still open:** pager/Slack; **`/dash/admin`** alert tiles; ban/GPU/SLA hooks.
 - [ ] **M9 phase-2:** auto-open SOP runs from alert types — **`POST /ops/sops/{id}/run`** with `trigger_type=auto` (**coordinate Chat I**; consume **`ops_alert_events`** or a mapped view).
 
 ---
@@ -200,7 +200,7 @@ Blueprint calls for an **Admin → Control Plane** experience (not only REST). T
 
 **Chat H (2026-05-14):** **`SuperAdminControlPlaneScreen`** — per-panel “Needs: …” + explicit **no admin GET/PUT routes → no Flutter editors**; **M9** phase-2 / day-1 seed / PDF = Stem + **Chat I** + **Chat L** (no extra UI hooks unless Stem assigns).
 
-- [ ] **Runtime config editor**: key/value by type, validation, last editor + timestamp, **revert** using `ops_runtime_config_audit`.
+- [x] **Runtime config editor (API):** **`GET/PUT /ops/runtime-config/{key}`** with **`ops_runtime_config_audit`** on update. **Still open:** Flutter control-plane panels (**Chat H**).
 - [ ] **Pricing panel (India)**: `pricing.in.*` minor units, live **preview** (“UPI = ₹X”, “Card = ₹Y”).
 - [ ] **Debounce panel**: seconds, max, adaptive toggles.
 - [ ] **Urgent bypass panel**: keywords + intents arrays (`routing.urgent_*` or aligned keys).
@@ -226,10 +226,10 @@ Blueprint calls for an **Admin → Control Plane** experience (not only REST). T
 
 **Gate (Chat A):** Ship the items below **only** after **Stem-approved** API contract (OpenAPI + consumer notes for **Chat H** / **Chat L**) **and** new **Alembic migrations** when the contract requires schema changes — no ad-hoc raises to **`LIMIT 500`**, **`trigger_type`**, or export paths without that sign-off.
 
-- [ ] **Auto-trigger API hooks:** Chat **L** workers (e.g. **`alert_eval_worker`**) or a thin **`ops_api` internal** caller → **`POST /ops/sops/{id}/run`** with `trigger_type=auto` (and stable **`context_json`** keys, e.g. **`ops_alert_event_id`**, **`alert_type`**); **`ops_runtime_config`** map **`alerts.sop_trigger_map`** (alert type → SOP **slug** or id); **idempotency** policy per alert/run (Stem + Chat **I**).
-- [ ] **`GET /ops/runs` pagination:** today **`ORDER BY created_at DESC`** + hard **`LIMIT 500`**; add **`cursor` / `limit`** (or offset) + document contract for **Chat H** list + infinite scroll.
-- [ ] **Stricter `trigger_type`:** evolve beyond API-layer literals to **DB `CHECK`**, shared allowlist, or enum aligned with **`auto`** / future **`alert:*`** values; migration + backfill rules if needed.
-- [ ] **`GET /ops/sops/{id}/versions` at scale:** v1 returns **full** history **`ORDER BY version_num ASC`** (no paging). Optional **`limit` / `before_version`** (or cursor) if bodies grow large; consider **excluding** `body_markdown` on a “light” index endpoint for timeline-only UI.
+- [x] **Auto-trigger API hooks:** **`alert_eval_worker`** → **`maybe_create_auto_sop_run`** when **`alerts.sop_trigger_map`** maps alert type → SOP **slug** (idempotent on **`ops_alert_event_id`**).
+- [x] **`GET /ops/runs` pagination:** **`cursor` / `limit`** + **`RunListOut`** (`items`, `next_cursor`).
+- [x] **Stricter `trigger_type`:** **DB `CHECK`** on **`ops_run_logs`** (**migration `0011`**) + Pydantic literals including **`alert:*`**.
+- [x] **`GET /ops/sops/{id}/versions` at scale:** **`limit`**, **`before_version`**, **`include_body=false`** for light timeline rows.
 - [ ] **Export:** PDF or printable runbook (see **Optional** below — keep one product-owned row).
 
 ### Interactive SOP / Runbook UI (super-admin) — **shipped (Chat H); phase 2 below**
@@ -257,15 +257,15 @@ This is the **dashboard / interactive solution** for SOPs (not a static Markdown
 
 **Handoff status:** **Chat M** documentation slice is **complete** in **`HANDOFF.md`**, **`README.md`** (§ Release / CI), **Meta** cross-rule below, and this section’s intent — so scope, target CI, approval hooks, and **Chat N** coordination are **documented**. **Unchecked rows below** remain **open engineering** (no release API in tree yet; **`ci.yml`** still **pytest-only**).
 
-- [ ] **`GET/POST /ops/releases*`** (or equivalent under **`ops_api`**): **register** build metadata + **test report hash**; **promote** current candidate; **rollback** to prior registered build — all **admin-gated** with audit fields.
-- [ ] **CI (`.github/workflows/ci.yml`):** keep default **`python -m pytest tests/`** job; add **Postgres `services:`** job that runs **`alembic upgrade head`** + **`RUN_POSTGRES_INTEGRATION=1`** integration module; add **contract** job(s) (e.g. OpenAPI / billing signatures / gateway no-AI imports) as Stem assigns; optional separate job with **`RUN_WA_GATEWAY_E2E=1`** + documented secrets (off by default on PRs).
+- [x] **`GET/POST /ops/releases*`** + **`POST /ops/releases/{id}/promote`** under **`ops_api`** (**migration `0011`** **`ops_releases`**).
+- [x] **CI (`.github/workflows/ci.yml`):** **`pytest-postgres`** job — **`alembic upgrade head`** + **`RUN_POSTGRES_INTEGRATION=1`**. **Still open:** contract job matrix; optional **`RUN_WA_GATEWAY_E2E`** job.
 - [ ] **Manual approval hooks** documented in **README** + **HANDOFF**: changes under **`backend/apps/ai_engine/`**, **`wa_gateway/`** (routing / paywall / debounce), and **`billing_api/`** (webhooks, checkout, plan-affecting paths) require **human review** before prod — e.g. GitHub **Environments** (`production`) with **required reviewers**, **CODEOWNERS** on those paths, and/or **branch protection**; Stem picks which levers the org uses.
 
 ---
 
 ## Cross-cutting
 
-- [ ] **`ZY_BASE_DIR`** (or equivalent): no hardcoded `C:\` paths; logs/exports/model cache derived from config (blueprint §10).
+- [x] **`ZY_BASE_DIR`** (or equivalent): **`backend/shared/path_layout.py`** + **`settings.zy_base_dir`** / env (blueprint §10).
 - [ ] **Acceptance tests** in repo: debounce **A1–A5**, urgent **U1–U2**, NEEDS_OWNER fixed string, burst → single reply E2E.
 - [ ] Staging environment mirrors prod behavior (numbers + payment sandboxes).
 

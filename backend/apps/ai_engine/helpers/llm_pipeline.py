@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import logging
 from dataclasses import replace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
+from backend.apps.ai_engine.helpers.context_loader import AIRequestContext, format_context_block
 from backend.apps.ai_engine.helpers.llm_client import openai_chat_completion, parse_judge_json
+from backend.apps.ai_engine.helpers.llm_usage import check_and_increment_llm_daily_usage
 from backend.apps.ai_engine.helpers.quality_gate import heuristic_reply_ok
 from backend.apps.ai_engine.helpers.respond_logic import AIRespondDecision, is_llm_eligible_decision
 
@@ -34,6 +36,9 @@ def maybe_enhance_reply_with_llm(
     *,
     settings: "Settings",
     ops: "AIEngineOpsBundle",
+    client_id: str | None = None,
+    engine: Any | None = None,
+    context: AIRequestContext | None = None,
 ) -> AIRespondDecision:
     """
     Optional generative pass for the default ``general_ack`` path only.
@@ -49,13 +54,39 @@ def maybe_enhance_reply_with_llm(
     if not ops.fallback_enabled:
         return decision
 
+    if client_id and engine is not None:
+        if not check_and_increment_llm_daily_usage(
+            engine,
+            client_id=client_id,
+            max_calls_per_day=ops.fallback_max_calls_per_client_per_day,
+        ):
+            logger.info(
+                "LLM daily cap reached for client=%s (max=%s); using deterministic reply",
+                client_id,
+                ops.fallback_max_calls_per_client_per_day,
+            )
+            return decision
+
     lang = decision.language
     sys = (
         "You are a concise WhatsApp assistant for a small business. "
         + _language_instruction(lang)
         + " Max ~600 characters. Plain text only — no JSON, no markdown fences, no emojis unless the customer used them."
     )
-    user = f"Customer message:\n{batch_text.strip()}"
+    ctx_block = format_context_block(context) if context else ""
+    user_parts = []
+    if ctx_block:
+        user_parts.append(ctx_block)
+    user_parts.append(f"Customer message:\n{batch_text.strip()}")
+    user = "\n\n".join(user_parts)
+
+    logger.info(
+        "LLM enhance start client=%s lang=%s primary_model=%s judge=%s",
+        client_id or "-",
+        lang,
+        settings.ai_llm_primary_model,
+        ops.fallback_use_judge,
+    )
 
     try:
         draft = openai_chat_completion(
@@ -106,6 +137,7 @@ def maybe_enhance_reply_with_llm(
             logger.exception("Judge LLM failed; using deterministic reply")
             return decision
 
+    logger.info("LLM enhance success client=%s confidence=%.2f", client_id or "-", confidence)
     return replace(
         decision,
         reply_text=draft.strip(),

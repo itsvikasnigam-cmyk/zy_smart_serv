@@ -6,7 +6,14 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 SopStatus = Literal["active", "archived"]
-TriggerType = Literal["manual", "auto", "scheduled", "other"]
+TriggerType = Literal[
+    "manual",
+    "auto",
+    "scheduled",
+    "other",
+    "alert:outbox_dead_spike",
+    "alert:meta_webhook_error_spike",
+]
 
 
 class SopCreate(BaseModel):
@@ -81,3 +88,14 @@ class RunCreateResponse(BaseModel):
     id: str
     sop_id: str
     sop_version_at_run: int
+
+
+class RunListOut(BaseModel):
+    items: list[RunOut]
+    next_cursor: str | None = None
+
+
+class SopVersionLightOut(BaseModel):
+    version_num: int
+    created_at: datetime
+    created_by_user_id: str | None = None

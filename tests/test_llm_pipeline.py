@@ -81,5 +81,6 @@ def test_ops_bundle_dataclass_for_tests() -> None:
         fallback_quality_threshold=0.5,
         fallback_max_primary_tokens=100,
         fallback_max_judge_tokens=50,
+        fallback_max_calls_per_client_per_day=200,
     )
     assert b.fallback_max_primary_tokens == 100

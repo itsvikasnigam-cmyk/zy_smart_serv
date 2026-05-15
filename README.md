@@ -197,6 +197,17 @@ $env:DATABASE_URL = "postgresql+psycopg://postgres:postgres@localhost:5432/zysma
 python -m uvicorn backend.apps.ai_engine.main:app --reload --port 8083
 ```
 
+**Enable external LLM (optional)**
+
+Deterministic routing always works without a key. To spend on OpenAI-compatible chat completions:
+
+1. Set env: `AI_LLM_API_KEY`, optional `AI_LLM_BASE_URL`, `AI_LLM_PRIMARY_MODEL`, `AI_LLM_JUDGE_MODEL` (see `backend/.env.example`).
+2. In Postgres `ops_runtime_config`, set `ai.fallback.enabled` → `true` (and optionally `ai.fallback.use_judge`, token caps, `ai.fallback.max_calls_per_client_per_day`).
+3. Run `alembic upgrade head` (includes `ai_llm_daily_usage` for per-client caps).
+4. Smoke: `python -m pytest tests/test_ai_engine_api.py tests/test_llm_pipeline.py -q`
+
+The engine loads recent inbox messages + business context server-side (no change to the five-field `batch_processor` POST body).
+
 **Batch worker**
 
 ```powershell

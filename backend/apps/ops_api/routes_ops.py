@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import date
+from datetime import date, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Query, status
@@ -15,12 +15,14 @@ from .deps import SuperAdminUser
 from .models import (
     RunCreate,
     RunCreateResponse,
+    RunListOut,
     RunOut,
     SopCreate,
     SopCreateResponse,
     SopDetailOut,
     SopSummaryOut,
     SopUpdate,
+    SopVersionLightOut,
     SopVersionOut,
 )
 
@@ -142,9 +144,15 @@ def get_sop(_user: SuperAdminUser, sop_id: str) -> SopDetailOut:
     )
 
 
-@router.get("/sops/{sop_id}/versions", response_model=list[SopVersionOut])
-def list_sop_versions(_user: SuperAdminUser, sop_id: str) -> list[SopVersionOut]:
-    """All immutable markdown versions for history, diff, and restore flows (Chat H)."""
+@router.get("/sops/{sop_id}/versions", response_model=list[SopVersionOut] | list[SopVersionLightOut])
+def list_sop_versions(
+    _user: SuperAdminUser,
+    sop_id: str,
+    limit: Annotated[int, Query(ge=1, le=200)] = 200,
+    before_version: Annotated[int | None, Query(ge=1, description="Return versions < this number")] = None,
+    include_body: Annotated[bool, Query(description="When false, omit body_markdown (timeline UI)")] = True,
+) -> list[SopVersionOut] | list[SopVersionLightOut]:
+    """Immutable version history; optional paging and light rows without markdown bodies."""
     with engine.begin() as conn:
         exists = conn.execute(
             text("SELECT 1 FROM ops_sops WHERE id = CAST(:id AS uuid) LIMIT 1"),
@@ -152,28 +160,39 @@ def list_sop_versions(_user: SuperAdminUser, sop_id: str) -> list[SopVersionOut]
         ).fetchone()
         if not exists:
             raise HTTPException(status_code=404, detail="sop not found")
-        rows = conn.execute(
-            text(
-                """
-                SELECT v.version_num, v.body_markdown, v.created_at, v.created_by_user_id::text
-                FROM ops_sop_versions v
-                WHERE v.sop_id = CAST(:sid AS uuid)
-                ORDER BY v.version_num ASC
-                """
-            ),
-            {"sid": sop_id},
-        ).all()
-    out: list[SopVersionOut] = []
-    for r in rows:
-        out.append(
-            SopVersionOut(
+        parts = [
+            """
+            SELECT v.version_num, v.body_markdown, v.created_at, v.created_by_user_id::text
+            FROM ops_sop_versions v
+            WHERE v.sop_id = CAST(:sid AS uuid)
+            """
+        ]
+        params: dict[str, object] = {"sid": sop_id, "lim": limit}
+        if before_version is not None:
+            parts.append("AND v.version_num < :bv")
+            params["bv"] = before_version
+        parts.append("ORDER BY v.version_num DESC")
+        parts.append("LIMIT :lim")
+        rows = conn.execute(text("\n".join(parts)), params).all()
+    rows = list(reversed(rows))
+    if not include_body:
+        return [
+            SopVersionLightOut(
                 version_num=int(r[0]),
-                body_markdown=r[1],
                 created_at=r[2],
                 created_by_user_id=r[3],
             )
+            for r in rows
+        ]
+    return [
+        SopVersionOut(
+            version_num=int(r[0]),
+            body_markdown=r[1],
+            created_at=r[2],
+            created_by_user_id=r[3],
         )
-    return out
+        for r in rows
+    ]
 
 
 @router.put("/sops/{sop_id}", response_model=SopCreateResponse)
@@ -289,7 +308,7 @@ def start_run(user: SuperAdminUser, sop_id: str, body: RunCreate) -> RunCreateRe
     return RunCreateResponse(id=rid, sop_id=sop_id, sop_version_at_run=ver)
 
 
-@router.get("/runs", response_model=list[RunOut])
+@router.get("/runs", response_model=RunListOut)
 def list_runs(
     _user: SuperAdminUser,
     client_id: Annotated[str | None, Query(description="Filter by linked api_clients.id")] = None,
@@ -297,7 +316,9 @@ def list_runs(
     trigger_type: Annotated[str | None, Query()] = None,
     from_date: Annotated[date | None, Query(description="UTC date inclusive (created_at::date)")] = None,
     to_date: Annotated[date | None, Query(description="UTC date inclusive")] = None,
-) -> list[RunOut]:
+    limit: Annotated[int, Query(ge=1, le=500)] = 100,
+    cursor: Annotated[str | None, Query(description="created_at|run_id for next page")] = None,
+) -> RunListOut:
     parts = [
         """
         SELECT id::text, sop_id::text, sop_version_at_run, context_json, trigger_type,
@@ -322,13 +343,24 @@ def list_runs(
     if to_date is not None:
         parts.append("AND created_at::date <= :to_date")
         params["to_date"] = to_date
-    parts.append("ORDER BY created_at DESC")
-    parts.append("LIMIT 500")
+    if cursor:
+        try:
+            ts_s, rid = cursor.split("|", 1)
+            params["c_ts"] = datetime.fromisoformat(ts_s.replace("Z", "+00:00"))
+            params["c_id"] = rid
+            parts.append("AND (created_at, id) < (:c_ts, CAST(:c_id AS uuid))")
+        except (ValueError, TypeError) as e:
+            raise HTTPException(status_code=400, detail="invalid cursor") from e
+    parts.append("ORDER BY created_at DESC, id DESC")
+    params["lim"] = limit + 1
+    parts.append("LIMIT :lim")
     sql = "\n".join(parts)
     with engine.begin() as conn:
         rows = conn.execute(text(sql), params).all()
+    has_more = len(rows) > limit
+    page = rows[:limit]
     out: list[RunOut] = []
-    for r in rows:
+    for r in page:
         ctx = r[3]
         if ctx is not None and not isinstance(ctx, dict):
             ctx = dict(ctx)  # type: ignore[arg-type]
@@ -344,7 +376,11 @@ def list_runs(
                 created_at=r[7],
             )
         )
-    return out
+    next_cursor = None
+    if has_more and page:
+        last = page[-1]
+        next_cursor = f"{last[7].isoformat()}|{last[0]}"
+    return RunListOut(items=out, next_cursor=next_cursor)
 
 
 @router.get("/runs/{run_id}", response_model=RunOut)

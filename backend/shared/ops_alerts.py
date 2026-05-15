@@ -21,19 +21,20 @@ def insert_ops_alert_event(
     summary: str,
     detail: dict[str, Any] | None = None,
     dedupe_key: str | None = None,
-) -> bool:
+) -> tuple[bool, str | None]:
     """
     Insert one row into ``ops_alert_events``.
 
-    When ``dedupe_key`` is set, conflicts on the partial unique index are ignored (returns False).
+    Returns ``(inserted, event_id)``. When ``dedupe_key`` conflicts, returns ``(False, None)``.
     """
     dk = (dedupe_key or "").strip() or None
     try:
-        conn.execute(
+        row = conn.execute(
             text(
                 """
                 INSERT INTO ops_alert_events (alert_type, severity, summary, detail_json, dedupe_key)
                 VALUES (:t, :s, :sum, CAST(:detail AS jsonb), :dk)
+                RETURNING id::text
                 """
             ),
             {
@@ -43,11 +44,13 @@ def insert_ops_alert_event(
                 "detail": json.dumps(detail or {}, separators=(",", ":")),
                 "dk": dk,
             },
-        )
+        ).fetchone()
     except IntegrityError:
-        return False
+        return False, None
+    if not row:
+        return False, None
     log.warning("ops_alert %s [%s] %s", alert_type, severity, summary)
-    return True
+    return True, str(row[0])
 
 
 def record_alert_event_safe(

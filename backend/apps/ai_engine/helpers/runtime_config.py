@@ -18,6 +18,7 @@ FALLBACK_USE_JUDGE_KEY = "ai.fallback.use_judge"
 FALLBACK_QUALITY_THRESHOLD_KEY = "ai.fallback.quality_threshold"
 FALLBACK_MAX_PRIMARY_TOKENS_KEY = "ai.fallback.max_primary_tokens"
 FALLBACK_MAX_JUDGE_TOKENS_KEY = "ai.fallback.max_judge_tokens"
+FALLBACK_MAX_CALLS_PER_CLIENT_KEY = "ai.fallback.max_calls_per_client_per_day"
 
 _AI_OPS_KEYS = (
     URGENT_BYPASS_KEY,
@@ -27,6 +28,7 @@ _AI_OPS_KEYS = (
     FALLBACK_QUALITY_THRESHOLD_KEY,
     FALLBACK_MAX_PRIMARY_TOKENS_KEY,
     FALLBACK_MAX_JUDGE_TOKENS_KEY,
+    FALLBACK_MAX_CALLS_PER_CLIENT_KEY,
 )
 
 
@@ -41,6 +43,7 @@ class AIEngineOpsBundle:
     fallback_quality_threshold: float
     fallback_max_primary_tokens: int
     fallback_max_judge_tokens: int
+    fallback_max_calls_per_client_per_day: int
 
 
 def _coerce_string_list(value: Any) -> list[str]:
@@ -114,6 +117,7 @@ def default_ai_engine_ops_bundle() -> AIEngineOpsBundle:
         fallback_quality_threshold=0.65,
         fallback_max_primary_tokens=512,
         fallback_max_judge_tokens=256,
+        fallback_max_calls_per_client_per_day=200,
     )
 
 
@@ -131,7 +135,7 @@ def load_ai_engine_ops_bundle(engine: Any) -> AIEngineOpsBundle:
                 SELECT key, value_json
                 FROM ops_runtime_config
                 WHERE key IN (
-                  :k0, :k1, :k2, :k3, :k4, :k5, :k6
+                  :k0, :k1, :k2, :k3, :k4, :k5, :k6, :k7
                 )
                 """
             )
@@ -145,6 +149,7 @@ def load_ai_engine_ops_bundle(engine: Any) -> AIEngineOpsBundle:
                     "k4": _AI_OPS_KEYS[4],
                     "k5": _AI_OPS_KEYS[5],
                     "k6": _AI_OPS_KEYS[6],
+                    "k7": _AI_OPS_KEYS[7],
                 },
             ).all()
     except Exception:
@@ -166,6 +171,7 @@ def load_ai_engine_ops_bundle(engine: Any) -> AIEngineOpsBundle:
     fb_thr = _coerce_float(by_key.get(FALLBACK_QUALITY_THRESHOLD_KEY), 0.65, lo=0.0, hi=1.0)
     fb_ptok = _coerce_int(by_key.get(FALLBACK_MAX_PRIMARY_TOKENS_KEY), 512, lo=32, hi=4096)
     fb_jtok = _coerce_int(by_key.get(FALLBACK_MAX_JUDGE_TOKENS_KEY), 256, lo=32, hi=2048)
+    fb_calls = _coerce_int(by_key.get(FALLBACK_MAX_CALLS_PER_CLIENT_KEY), 200, lo=0, hi=100_000)
 
     return AIEngineOpsBundle(
         urgent_bypass_substrings=urgent,
@@ -175,6 +181,7 @@ def load_ai_engine_ops_bundle(engine: Any) -> AIEngineOpsBundle:
         fallback_quality_threshold=fb_thr,
         fallback_max_primary_tokens=fb_ptok,
         fallback_max_judge_tokens=fb_jtok,
+        fallback_max_calls_per_client_per_day=fb_calls,
     )
 
 

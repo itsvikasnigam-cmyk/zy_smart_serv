@@ -284,6 +284,18 @@ def _coerce_jsonb_int_cfg(value: Any, default: int) -> int:
     return default
 
 
+def _typing_hard_lock_enabled(conn: Connection) -> bool:
+    raw = conn.execute(
+        text("SELECT value_json FROM ops_runtime_config WHERE key = :k"),
+        {"k": "inbox.typing_hard_lock_enabled"},
+    ).scalar_one_or_none()
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, str):
+        return raw.strip().lower() in ("true", "1", "yes", "on")
+    return False
+
+
 def _pause_hours_agent_reply(conn: Connection, client_id: str) -> int:
     """Hours to extend ``ai_paused_until`` after an agent reply (Starter vs default from ops_runtime_config)."""
     row = conn.execute(
@@ -1187,10 +1199,23 @@ def reply(
             raise HTTPException(status_code=404, detail="chat not found")
 
         # Agents may only reply on chats they own; owners + super_admin may reply on any.
+        current = _active_assignment(conn, chat_id)
         if user.role == ROLE_AGENT:
-            current = _active_assignment(conn, chat_id)
             if not current or current["assigned_to_user_id"] != user.id:
                 raise HTTPException(status_code=403, detail="agent is not assigned to this chat")
+
+        if _typing_hard_lock_enabled(conn):
+            assignee = current["assigned_to_user_id"] if current else None
+            if assignee and assignee != user.id:
+                raise HTTPException(
+                    status_code=403,
+                    detail="typing hard lock: only the assigned agent may reply on this chat",
+                )
+            if not assignee and user.role == ROLE_AGENT:
+                raise HTTPException(
+                    status_code=403,
+                    detail="typing hard lock: chat must be assigned before agent reply",
+                )
 
         if not chat.get("waba_number"):
             raise HTTPException(

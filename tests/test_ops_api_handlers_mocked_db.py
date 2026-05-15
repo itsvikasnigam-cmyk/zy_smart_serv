@@ -223,9 +223,9 @@ def test_list_runs_and_get_run(monkeypatch: pytest.MonkeyPatch, super_admin: Cur
             lr = client.get("/ops/runs")
             assert lr.status_code == 200
             data = lr.json()
-            assert len(data) == 1
-            assert data[0]["id"] == row[0]
-            assert data[0]["context_json"] == {"k": "v"}
+            assert len(data["items"]) == 1
+            assert data["items"][0]["id"] == row[0]
+            assert data["items"][0]["context_json"] == {"k": "v"}
 
             monkeypatch.setattr("backend.apps.ops_api.routes_ops.engine", _GetEng())
             gr = client.get(f"/ops/runs/{row[0]}")

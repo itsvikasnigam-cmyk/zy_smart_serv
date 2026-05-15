@@ -8,6 +8,13 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     app_env: str = Field(default="dev", description="dev|staging|prod")
+    zy_base_dir: str = Field(
+        default="",
+        description=(
+            "Blueprint §10 base directory for logs/exports/caches. "
+            "Empty uses ~/.zy-smart-serv. Override with env ZY_BASE_DIR."
+        ),
+    )
     database_url: str = Field(default="postgresql+psycopg://postgres:postgres@localhost:5432/zysmart")
 
     meta_app_secret: str = Field(default="", description="Meta app secret for webhook signature validation")

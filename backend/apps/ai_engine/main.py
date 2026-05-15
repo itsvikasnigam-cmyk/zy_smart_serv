@@ -22,6 +22,7 @@ from typing import Any, Literal
 from fastapi import FastAPI
 from pydantic import BaseModel, ConfigDict, Field
 
+from backend.apps.ai_engine.helpers.context_loader import load_ai_request_context
 from backend.apps.ai_engine.helpers.llm_pipeline import maybe_enhance_reply_with_llm
 from backend.apps.ai_engine.helpers.respond_logic import (
     NEEDS_OWNER_DATA_CUSTOMER_REPLY_FIXED,
@@ -84,7 +85,16 @@ def respond(req: AIRequest) -> AIResponse:
         urgent_bypass_substrings=ops.urgent_bypass_substrings,
         needs_owner_customer_reply=owner_reply,
     )
-    decision = maybe_enhance_reply_with_llm(decision, req.batch_text, settings=settings, ops=ops)
+    ctx = load_ai_request_context(engine, client_id=req.client_id, chat_id=req.chat_id)
+    decision = maybe_enhance_reply_with_llm(
+        decision,
+        req.batch_text,
+        settings=settings,
+        ops=ops,
+        client_id=req.client_id,
+        engine=engine,
+        context=ctx,
+    )
     payload = decision_to_response_dict(decision)
     try:
         return AIResponse.model_validate(payload)

@@ -24,4 +24,41 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}
         run: python -m pytest tests/ -q
 
-      # Optional live gateway e2e: start Postgres + gateway + set RUN_WA_GATEWAY_E2E=1 in a follow-up job.
+  pytest-postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: zysmart
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r backend/requirements.txt
+
+      - name: Migrate database
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+          DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/zysmart
+        run: python -m alembic -c backend/alembic.ini upgrade head
+
+      - name: Optional Postgres integration tests
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+          DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/zysmart
+          RUN_POSTGRES_INTEGRATION: "1"
+        run: python -m pytest tests/test_postgres_integration_optional.py -q
