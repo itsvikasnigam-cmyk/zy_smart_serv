@@ -5,6 +5,7 @@ import '../state/session_controller.dart';
 import 'account_screen.dart';
 import 'client_dashboard_screen.dart';
 import 'inbox_chats_screen.dart';
+import 'inbox_notifications_screen.dart';
 import 'super_admin_api_settings_sheet.dart';
 import 'super_admin_shell.dart';
 
@@ -17,6 +18,38 @@ class HomeShell extends StatefulWidget {
 
 class _HomeShellState extends State<HomeShell> {
   int _index = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final session = context.read<SessionController>();
+      if (session.isLoggedIn && !session.user!.isSuperAdmin) {
+        unawaited(session.refreshUnreadNotificationCount());
+      }
+    });
+  }
+
+  String _titleForIndex(int i, String role) {
+    switch (i) {
+      case 0:
+        return 'Inbox · $role';
+      case 1:
+        return 'Alerts · $role';
+      case 2:
+        return 'Dashboard';
+      default:
+        return 'Account';
+    }
+  }
+
+  Widget _badgeIcon(Widget icon, int count) {
+    if (count <= 0) return icon;
+    return Badge(
+      label: Text(count > 99 ? '99+' : '$count'),
+      child: icon,
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -43,8 +76,10 @@ class _HomeShellState extends State<HomeShell> {
       );
     }
 
+    final unread = session.unreadNotificationCount;
     final pages = <Widget>[
       const InboxChatsScreen(),
+      const InboxNotificationsScreen(),
       ClientDashboardScreen(key: ValueKey(session.dashGeneration)),
       const AccountScreen(),
     ];
@@ -56,19 +91,15 @@ class _HomeShellState extends State<HomeShell> {
         if (wide) {
           return Scaffold(
             appBar: AppBar(
-              title: Text(
-                _index == 0
-                    ? 'Inbox · ${user.role}'
-                    : _index == 1
-                        ? 'Dashboard'
-                        : 'Account',
-              ),
+              title: Text(_titleForIndex(_index, user.role)),
               actions: [
                 IconButton(
-                  tooltip: 'Refresh inbox & dashboard',
+                  tooltip: 'Refresh inbox, alerts & dashboard',
                   onPressed: () {
                     session.bumpInboxGeneration();
+                    session.bumpNotificationsGeneration();
                     session.bumpDashGeneration();
+                    unawaited(session.refreshUnreadNotificationCount());
                   },
                   icon: const Icon(Icons.refresh),
                 ),
@@ -78,20 +109,37 @@ class _HomeShellState extends State<HomeShell> {
               children: [
                 NavigationRail(
                   selectedIndex: _index,
-                  onDestinationSelected: (i) => setState(() => _index = i),
+                  onDestinationSelected: (i) {
+                    setState(() => _index = i);
+                    if (i == 1) {
+                      session.bumpNotificationsGeneration();
+                      unawaited(session.refreshUnreadNotificationCount());
+                    }
+                  },
                   labelType: NavigationRailLabelType.all,
-                  destinations: const [
-                    NavigationRailDestination(
+                  destinations: [
+                    const NavigationRailDestination(
                       icon: Icon(Icons.inbox_outlined),
                       selectedIcon: Icon(Icons.inbox),
                       label: Text('Inbox'),
                     ),
                     NavigationRailDestination(
+                      icon: _badgeIcon(
+                        const Icon(Icons.notifications_outlined),
+                        unread,
+                      ),
+                      selectedIcon: _badgeIcon(
+                        const Icon(Icons.notifications),
+                        unread,
+                      ),
+                      label: const Text('Alerts'),
+                    ),
+                    const NavigationRailDestination(
                       icon: Icon(Icons.insights_outlined),
                       selectedIcon: Icon(Icons.insights),
                       label: Text('Dashboard'),
                     ),
-                    NavigationRailDestination(
+                    const NavigationRailDestination(
                       icon: Icon(Icons.person_outline),
                       selectedIcon: Icon(Icons.person),
                       label: Text('Account'),
@@ -106,19 +154,15 @@ class _HomeShellState extends State<HomeShell> {
         }
         return Scaffold(
           appBar: AppBar(
-            title: Text(
-              _index == 0
-                  ? 'Inbox · ${user.role}'
-                  : _index == 1
-                      ? 'Dashboard'
-                      : 'Account',
-            ),
+            title: Text(_titleForIndex(_index, user.role)),
             actions: [
               IconButton(
-                tooltip: 'Refresh inbox & dashboard',
+                tooltip: 'Refresh inbox, alerts & dashboard',
                 onPressed: () {
                   session.bumpInboxGeneration();
+                  session.bumpNotificationsGeneration();
                   session.bumpDashGeneration();
+                  unawaited(session.refreshUnreadNotificationCount());
                 },
                 icon: const Icon(Icons.refresh),
               ),
@@ -127,19 +171,36 @@ class _HomeShellState extends State<HomeShell> {
           body: pages[_index],
           bottomNavigationBar: NavigationBar(
             selectedIndex: _index,
-            onDestinationSelected: (i) => setState(() => _index = i),
-            destinations: const [
-              NavigationDestination(
+            onDestinationSelected: (i) {
+              setState(() => _index = i);
+              if (i == 1) {
+                session.bumpNotificationsGeneration();
+                unawaited(session.refreshUnreadNotificationCount());
+              }
+            },
+            destinations: [
+              const NavigationDestination(
                 icon: Icon(Icons.inbox_outlined),
                 selectedIcon: Icon(Icons.inbox),
                 label: 'Inbox',
               ),
               NavigationDestination(
+                icon: _badgeIcon(
+                  const Icon(Icons.notifications_outlined),
+                  unread,
+                ),
+                selectedIcon: _badgeIcon(
+                  const Icon(Icons.notifications),
+                  unread,
+                ),
+                label: 'Alerts',
+              ),
+              const NavigationDestination(
                 icon: Icon(Icons.insights_outlined),
                 selectedIcon: Icon(Icons.insights),
                 label: 'Dashboard',
               ),
-              NavigationDestination(
+              const NavigationDestination(
                 icon: Icon(Icons.person_outline),
                 selectedIcon: Icon(Icons.person),
                 label: 'Account',

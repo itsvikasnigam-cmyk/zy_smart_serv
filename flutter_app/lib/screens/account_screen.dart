@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 
 import '../state/session_controller.dart';
 import 'connection_settings_screen.dart';
+import 'owner_billing_screen.dart';
 
 class AccountScreen extends StatelessWidget {
   const AccountScreen({super.key});
@@ -28,6 +29,20 @@ class AccountScreen extends StatelessWidget {
             Navigator.of(context).push(
               MaterialPageRoute<void>(
                 builder: (_) => const ConnectionSettingsScreen(),
+              ),
+            );
+          },
+        ),
+        const Divider(),
+        ListTile(
+          leading: const Icon(Icons.payments_outlined),
+          title: const Text('Billing & subscription'),
+          subtitle: const Text('Plan, trial, invoices (port 8086)'),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () {
+            Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) => const OwnerBillingScreen(),
               ),
             );
           },

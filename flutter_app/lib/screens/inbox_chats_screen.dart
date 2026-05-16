@@ -45,13 +45,31 @@ class _InboxChatsScreenState extends State<InboxChatsScreen> {
     session.bumpInboxGeneration();
   }
 
+  String _stateLabel(String state) {
+    switch (state) {
+      case 'HUMAN_REQ':
+        return 'Needs human';
+      case 'WAITING_OWNER_DATA':
+        return 'Needs your info';
+      case 'AGENT_ACTIVE':
+        return 'Agent chatting';
+      case 'AI_ACTIVE':
+        return 'AI chatting';
+      case 'CLOSED':
+        return 'Closed';
+      default:
+        return state;
+    }
+  }
+
   String _activitySubtitle(ChatListItem c) {
     final t = c.lastCustomerMsgAt ?? c.lastOutboundAt ?? c.createdAt;
     final rel = DateFormat.MMMd().add_Hm().format(t.toLocal());
+    final assign = c.assignedAgentId != null ? ' · Assigned' : ' · Unassigned';
     final pause = c.aiPausedUntil != null && c.aiPausedUntil!.isAfter(DateTime.now())
         ? ' · AI paused until ${DateFormat.MMMd().add_Hm().format(c.aiPausedUntil!.toLocal())}'
         : '';
-    return '${c.state} · $rel · ${c.lastMessagePreview ?? '—'}$pause';
+    return '${_stateLabel(c.state)}$assign · $rel · ${c.lastMessagePreview ?? '—'}$pause';
   }
 
   @override
@@ -76,19 +94,33 @@ class _InboxChatsScreenState extends State<InboxChatsScreen> {
           ),
         Padding(
           padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
-          child: TextField(
-            controller: _search,
-            decoration: InputDecoration(
-              hintText: 'Search phone…',
-              border: const OutlineInputBorder(),
-              isDense: true,
-              suffixIcon: IconButton(
-                tooltip: 'Search',
-                icon: const Icon(Icons.search),
-                onPressed: () => setState(() => session.bumpInboxGeneration()),
+          child: Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _search,
+                  decoration: InputDecoration(
+                    hintText: 'Search phone…',
+                    border: const OutlineInputBorder(),
+                    isDense: true,
+                    suffixIcon: IconButton(
+                      tooltip: 'Search',
+                      icon: const Icon(Icons.search),
+                      onPressed: () =>
+                          setState(() => session.bumpInboxGeneration()),
+                    ),
+                  ),
+                  onSubmitted: (_) =>
+                      setState(() => session.bumpInboxGeneration()),
+                ),
               ),
-            ),
-            onSubmitted: (_) => setState(() => session.bumpInboxGeneration()),
+              const SizedBox(width: 8),
+              FilledButton.tonalIcon(
+                onPressed: () => _reloadList(session),
+                icon: const Icon(Icons.refresh, size: 20),
+                label: const Text('Refresh'),
+              ),
+            ],
           ),
         ),
         SingleChildScrollView(

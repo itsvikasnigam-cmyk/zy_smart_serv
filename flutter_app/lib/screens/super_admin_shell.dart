@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 
 import 'sops/sop_library_screen.dart';
 import 'sops/sop_runs_list_screen.dart';
+import 'super_admin_alerts_screen.dart';
+import 'super_admin_broadcast_screen.dart';
 import 'super_admin_control_plane_screen.dart';
 import 'super_admin_dash_screen.dart';
 
@@ -17,6 +19,26 @@ class _SuperAdminShellState extends State<SuperAdminShell> {
   int _tab = 0;
   final _sopNavKey = GlobalKey<NavigatorState>();
   final _runsNavKey = GlobalKey<NavigatorState>();
+
+  /// Nested tab navigator (imperative [Navigator.push] from child screens).
+  Widget _tabNavigator({
+    required GlobalKey<NavigatorState> navKey,
+    required Widget root,
+  }) {
+    return Navigator(
+      key: navKey,
+      initialRoute: '/',
+      onGenerateRoute: (settings) {
+        if (settings.name == '/') {
+          return MaterialPageRoute<void>(
+            settings: settings,
+            builder: (_) => root,
+          );
+        }
+        return null;
+      },
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -39,15 +61,17 @@ class _SuperAdminShellState extends State<SuperAdminShell> {
         body: IndexedStack(
           index: _tab,
           children: [
-            Navigator(
-              key: _sopNavKey,
-              home: const SopLibraryScreen(),
+            _tabNavigator(
+              navKey: _sopNavKey,
+              root: const SopLibraryScreen(),
             ),
-            Navigator(
-              key: _runsNavKey,
-              home: const SopRunsListScreen(),
+            _tabNavigator(
+              navKey: _runsNavKey,
+              root: const SopRunsListScreen(),
             ),
             const SuperAdminControlPlaneScreen(),
+            const SuperAdminBroadcastScreen(),
+            const SuperAdminAlertsScreen(),
             const SuperAdminDashScreen(),
           ],
         ),
@@ -69,6 +93,16 @@ class _SuperAdminShellState extends State<SuperAdminShell> {
               icon: Icon(Icons.tune_outlined),
               selectedIcon: Icon(Icons.tune),
               label: 'Control',
+            ),
+            NavigationDestination(
+              icon: Icon(Icons.campaign_outlined),
+              selectedIcon: Icon(Icons.campaign),
+              label: 'Broadcast',
+            ),
+            NavigationDestination(
+              icon: Icon(Icons.notifications_outlined),
+              selectedIcon: Icon(Icons.notifications),
+              label: 'Alerts',
             ),
             NavigationDestination(
               icon: Icon(Icons.insights_outlined),

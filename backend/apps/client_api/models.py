@@ -143,6 +143,14 @@ class NotificationList(BaseModel):
     items: list[NotificationOut]
 
 
+class DevTestNotificationOut(BaseModel):
+    """Response from dev-only ``POST /inbox/notifications/dev-test``."""
+
+    id: str
+    chat_id: str | None = None
+    message: str = "Test notification created."
+
+
 class ReplyResponse(BaseModel):
     message: MessageOut
     outbox_id: str

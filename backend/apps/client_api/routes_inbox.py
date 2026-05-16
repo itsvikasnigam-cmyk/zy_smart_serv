@@ -27,6 +27,7 @@ from sqlalchemy import text
 from sqlalchemy.engine import Connection
 from sqlalchemy.exc import IntegrityError
 
+from backend.shared.config import settings
 from backend.shared.db import engine
 from backend.shared.inbox_notify import (
     insert_assignment_audit,
@@ -52,6 +53,7 @@ from .models import (
     EscalateRequest,
     LEGAL_CHAT_STATES,
     MessageOut,
+    DevTestNotificationOut,
     NotificationList,
     NotificationOut,
     ReplyRequest,
@@ -596,6 +598,48 @@ def mark_notification_read(
     if not r:
         raise HTTPException(status_code=404, detail="notification not found")
     return {"ok": True}
+
+
+@router.post("/notifications/dev-test", response_model=DevTestNotificationOut)
+def create_dev_test_notification(
+    user: Annotated[CurrentUser, Depends(get_current_user)],
+    client_id: Annotated[str | None, Query(description="Required for super_admin")] = None,
+) -> DevTestNotificationOut:
+    """Insert one unread notification for the signed-in user (``APP_ENV=dev`` only)."""
+    if settings.app_env != "dev":
+        raise HTTPException(status_code=404, detail="not found")
+    assert_role_in(user, (ROLE_OWNER, ROLE_AGENT, ROLE_SUPER_ADMIN))
+    scope = resolve_client_scope(user, explicit_client_id=client_id)
+    chat_id: str | None = None
+    with engine.begin() as conn:
+        chat_row = conn.execute(
+            text(
+                """
+                SELECT id::text FROM inbox_chats
+                WHERE client_id = CAST(:cid AS uuid)
+                ORDER BY created_at DESC
+                LIMIT 1
+                """
+            ),
+            {"cid": scope},
+        ).fetchone()
+        if chat_row:
+            chat_id = chat_row[0]
+        nid, _ts = insert_notification(
+            conn,
+            client_id=scope,
+            recipient_user_id=user.id,
+            chat_id=chat_id,
+            kind="dev_test",
+            title="Test alert (dev)",
+            body="Practice notification from your local app. Tap to mark read and open the chat.",
+            payload={"dev": True, "source": "POST /inbox/notifications/dev-test"},
+        )
+    return DevTestNotificationOut(
+        id=nid,
+        chat_id=chat_id,
+        message="Test notification created. Tap Refresh list if it does not appear within a few seconds.",
+    )
 
 
 # ----------------------- assignment -----------------------

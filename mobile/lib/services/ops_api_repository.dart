@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 import '../config/ops_api_config.dart';
+import '../models/runtime_config_models.dart';
 import '../models/sop_models.dart';
 
 class OpsApiException implements Exception {
@@ -196,7 +197,15 @@ class OpsApiRepository {
       _throwForStatus(res);
       throw OpsApiException(res.statusCode, res.body);
     }
-    final list = jsonDecode(res.body) as List<dynamic>;
+    final decoded = jsonDecode(res.body);
+    final List<dynamic> list;
+    if (decoded is Map<String, dynamic> && decoded['items'] is List) {
+      list = decoded['items'] as List<dynamic>;
+    } else if (decoded is List) {
+      list = decoded;
+    } else {
+      throw OpsApiException(res.statusCode, 'unexpected /ops/runs shape');
+    }
     return list.map((e) => RunLog.fromJson(e as Map<String, dynamic>)).toList();
   }
 
@@ -208,5 +217,43 @@ class OpsApiRepository {
       throw OpsApiException(res.statusCode, res.body);
     }
     return RunLog.fromJson(jsonDecode(res.body) as Map<String, dynamic>);
+  }
+
+  Future<RuntimeConfigEntry> getRuntimeConfig({
+    required String token,
+    required String key,
+  }) async {
+    final encoded = Uri.encodeComponent(key);
+    final uri = config.rest('/ops/runtime-config/$encoded');
+    final res = await http.get(uri, headers: _headers(token));
+    if (res.statusCode != 200) {
+      _throwForStatus(res);
+      throw OpsApiException(res.statusCode, res.body);
+    }
+    return RuntimeConfigEntry.fromJson(
+      jsonDecode(res.body) as Map<String, dynamic>,
+    );
+  }
+
+  Future<RuntimeConfigEntry> putRuntimeConfig({
+    required String token,
+    required String key,
+    required Object? valueJson,
+    String? reason,
+  }) async {
+    final encoded = Uri.encodeComponent(key);
+    final uri = config.rest('/ops/runtime-config/$encoded');
+    final body = jsonEncode({
+      'value_json': valueJson,
+      if (reason != null && reason.isNotEmpty) 'reason': reason,
+    });
+    final res = await http.put(uri, headers: _headers(token), body: body);
+    if (res.statusCode != 200) {
+      _throwForStatus(res);
+      throw OpsApiException(res.statusCode, res.body);
+    }
+    return RuntimeConfigEntry.fromJson(
+      jsonDecode(res.body) as Map<String, dynamic>,
+    );
   }
 }

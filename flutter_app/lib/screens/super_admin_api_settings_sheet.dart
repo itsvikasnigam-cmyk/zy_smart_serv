@@ -7,6 +7,7 @@ Future<void> showSuperAdminApiSettingsSheet(BuildContext context) async {
   final session = context.read<SessionController>();
   final clientCtrl = TextEditingController(text: session.config.apiBaseUrl);
   final opsCtrl = TextEditingController(text: session.opsConfig.apiBaseUrl);
+  final tenantCtrl = TextEditingController(text: session.superAdminClientId);
 
   await showModalBottomSheet<void>(
     context: context,
@@ -47,11 +48,21 @@ Future<void> showSuperAdminApiSettingsSheet(BuildContext context) async {
                 border: OutlineInputBorder(),
               ),
             ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: tenantCtrl,
+              decoration: const InputDecoration(
+                labelText: 'super_admin tenant client_id',
+                hintText: 'UUID for /broadcast/* and inbox scope',
+                border: OutlineInputBorder(),
+              ),
+            ),
             const SizedBox(height: 16),
             FilledButton(
               onPressed: () {
                 session.setBaseUrl(clientCtrl.text.trim());
                 session.setOpsBaseUrl(opsCtrl.text.trim());
+                session.setSuperAdminClientId(tenantCtrl.text.trim());
                 Navigator.pop(ctx);
               },
               child: const Text('Save'),
@@ -71,4 +82,5 @@ Future<void> showSuperAdminApiSettingsSheet(BuildContext context) async {
 
   clientCtrl.dispose();
   opsCtrl.dispose();
+  tenantCtrl.dispose();
 }

@@ -45,7 +45,7 @@ class _LoginScreenState extends State<LoginScreen> {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text(
-              'Signed in as owner — Inbox (assign agents), Dashboard (tenant metrics), Account.',
+              'Signed in as owner — Inbox, Alerts, Dashboard, Account.',
             ),
           ),
         );
@@ -53,12 +53,13 @@ class _LoginScreenState extends State<LoginScreen> {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text(
-              'Signed in as agent — Inbox (your queue), Dashboard, Account. Replies only on assigned chats.',
+              'Signed in as agent — Inbox, Alerts, Dashboard, Account. Replies only on assigned chats.',
             ),
           ),
         );
       }
       await session.connectWebSocket();
+      await session.refreshUnreadNotificationCount();
       if (!mounted) return;
       if (!session.wsConnected && session.wsLastError != null) {
         ScaffoldMessenger.of(context).showSnackBar(

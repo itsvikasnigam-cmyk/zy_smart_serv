@@ -1,7 +1,7 @@
 """
 M7: evaluate simple spike thresholds → ``ops_alert_events`` rows + structured logging.
 
-Paging / ``ops_api`` auto-runs (M9 phase 2) stay out of this worker — see HANDOFF coordination with Chat I.
+New alerts inserted here auto-start SOP runs when ``alerts.sop_trigger_map`` is configured (see ``sop_alert_trigger``).
 """
 
 from __future__ import annotations

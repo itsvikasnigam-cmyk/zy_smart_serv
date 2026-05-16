@@ -186,6 +186,7 @@ class _SopRunsListScreenState extends State<SopRunsListScreen> {
                     DropdownMenuItem<String?>(value: null, child: Text('Any trigger')),
                     DropdownMenuItem(value: 'manual', child: Text('manual')),
                     DropdownMenuItem(value: 'auto', child: Text('auto')),
+                    DropdownMenuItem(value: 'alert', child: Text('alert')),
                     DropdownMenuItem(value: 'scheduled', child: Text('scheduled')),
                     DropdownMenuItem(value: 'other', child: Text('other')),
                   ],

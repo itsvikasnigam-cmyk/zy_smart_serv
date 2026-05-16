@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 import '../config/app_config.dart';
+import '../models/broadcast_models.dart';
 import '../models/chat_models.dart';
 import '../models/user_model.dart';
 
@@ -179,6 +180,30 @@ class ClientApiRepository {
     return items
         .map((e) => InboxNotification.fromJson(e as Map<String, dynamic>))
         .toList();
+  }
+
+  Future<Map<String, dynamic>> postDevTestNotification({
+    required String token,
+    required UserModel user,
+    String? superClientId,
+  }) async {
+    final q = <String, String>{};
+    final extra = _clientQuery(user.role, superClientId);
+    if (extra != null) {
+      q.addAll(extra);
+    }
+    final uri = config.rest('/inbox/notifications/dev-test', q.isEmpty ? null : q);
+    final res = await http.post(uri, headers: _headers(token));
+    if (res.statusCode == 404) {
+      throw ApiException(
+        res.statusCode,
+        'dev-test not available (needs APP_ENV=dev on client_api)',
+      );
+    }
+    if (res.statusCode != 200) {
+      throw ApiException(res.statusCode, res.body);
+    }
+    return jsonDecode(res.body) as Map<String, dynamic>;
   }
 
   Future<void> postNotificationRead({
@@ -381,6 +406,101 @@ class ClientApiRepository {
     if (res.statusCode != 200) {
       throw ApiException(res.statusCode, res.body);
     }
+  }
+
+  Future<List<MarketingOptIn>> listBroadcastOptIn({
+    required String token,
+    required UserModel user,
+    required String superClientId,
+    bool? optedIn,
+    int limit = 100,
+  }) async {
+    final q = <String, String>{
+      'client_id': superClientId,
+      'limit': '$limit',
+    };
+    if (optedIn != null) {
+      q['opted_in'] = optedIn.toString();
+    }
+    final uri = config.rest('/broadcast/opt-in', q);
+    final res = await http.get(uri, headers: _headers(token));
+    if (res.statusCode != 200) {
+      throw ApiException(res.statusCode, res.body);
+    }
+    final list = jsonDecode(res.body) as List<dynamic>;
+    return list
+        .map((e) => MarketingOptIn.fromJson(e as Map<String, dynamic>))
+        .toList();
+  }
+
+  Future<MarketingOptIn> putBroadcastOptIn({
+    required String token,
+    required UserModel user,
+    required String superClientId,
+    required String customerPhoneE164,
+    required bool optedIn,
+    String? source,
+  }) async {
+    final uri = config.rest('/broadcast/opt-in', {'client_id': superClientId});
+    final res = await http.put(
+      uri,
+      headers: _headers(token),
+      body: jsonEncode({
+        'customer_phone_e164': customerPhoneE164,
+        'opted_in': optedIn,
+        if (source != null && source.isNotEmpty) 'source': source,
+      }),
+    );
+    if (res.statusCode != 200) {
+      throw ApiException(res.statusCode, res.body);
+    }
+    return MarketingOptIn.fromJson(jsonDecode(res.body) as Map<String, dynamic>);
+  }
+
+  Future<List<BroadcastCampaign>> listBroadcastCampaigns({
+    required String token,
+    required UserModel user,
+    required String superClientId,
+    int limit = 50,
+  }) async {
+    final uri = config.rest('/broadcast/campaigns', {
+      'client_id': superClientId,
+      'limit': '$limit',
+    });
+    final res = await http.get(uri, headers: _headers(token));
+    if (res.statusCode != 200) {
+      throw ApiException(res.statusCode, res.body);
+    }
+    final list = jsonDecode(res.body) as List<dynamic>;
+    return list
+        .map((e) => BroadcastCampaign.fromJson(e as Map<String, dynamic>))
+        .toList();
+  }
+
+  Future<BroadcastCampaign> createBroadcastCampaign({
+    required String token,
+    required UserModel user,
+    required String superClientId,
+    required String fromWaNumberId,
+    required String templateName,
+    required String templateLanguage,
+    required List<String> targetChatIds,
+  }) async {
+    final uri = config.rest('/broadcast/campaigns', {'client_id': superClientId});
+    final res = await http.post(
+      uri,
+      headers: _headers(token),
+      body: jsonEncode({
+        'from_wa_number_id': fromWaNumberId,
+        'template_name': templateName,
+        'template_language': templateLanguage,
+        'target_chat_ids': targetChatIds,
+      }),
+    );
+    if (res.statusCode != 201 && res.statusCode != 200) {
+      throw ApiException(res.statusCode, res.body);
+    }
+    return BroadcastCampaign.fromJson(jsonDecode(res.body) as Map<String, dynamic>);
   }
 
   /// `path` must start with `/dash/` (e.g. `/dash/admin/overview`). **super_admin** JWT.

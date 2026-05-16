@@ -28,6 +28,8 @@ class _DashEndpoint {
 class _SuperAdminDashScreenState extends State<SuperAdminDashScreen> {
   late final List<_DashEndpoint> _endpoints;
 
+  bool _autoLoadDone = false;
+
   @override
   void initState() {
     super.initState();
@@ -39,6 +41,12 @@ class _SuperAdminDashScreenState extends State<SuperAdminDashScreen> {
       _DashEndpoint(title: 'WhatsApp ops', path: '/dash/admin/ops/whatsapp'),
       _DashEndpoint(title: 'Geo', path: '/dash/admin/geo'),
     ];
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!_autoLoadDone && mounted) {
+        _autoLoadDone = true;
+        _loadAll();
+      }
+    });
   }
 
   Future<void> _load(int i) async {
@@ -168,18 +176,8 @@ class _SuperAdminDashScreenState extends State<SuperAdminDashScreen> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Admin dashboards'),
-        actions: [
-          IconButton(
-            tooltip: 'Load all',
-            onPressed: _loadAll,
-            icon: const Icon(Icons.cloud_download_outlined),
-          ),
-        ],
-      ),
-      body: ListView.builder(
+    final anyLoading = _endpoints.any((e) => e.loading);
+    return ListView.builder(
         padding: const EdgeInsets.all(16),
         itemCount: _endpoints.length + 1,
         itemBuilder: (context, i) {
@@ -187,14 +185,31 @@ class _SuperAdminDashScreenState extends State<SuperAdminDashScreen> {
             return Padding(
               padding: const EdgeInsets.only(bottom: 16),
               child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
                   Text(
-                    'Charts track live `GET /dash/admin/*` JSON from client_api (Chat J). '
-                    'Zeros / empty dicts are normal until billing, workers, and metrics populate.',
+                    'Admin dashboards',
+                    style: theme.textTheme.titleLarge,
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    'Live `GET /dash/admin/*` on client_api. Zeros are normal until '
+                    'workers and billing data exist.',
                     style: theme.textTheme.bodyMedium?.copyWith(
                       color: theme.colorScheme.onSurfaceVariant,
                     ),
+                  ),
+                  const SizedBox(height: 12),
+                  FilledButton.icon(
+                    onPressed: anyLoading ? null : _loadAll,
+                    icon: anyLoading
+                        ? const SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.cloud_download_outlined),
+                    label: Text(anyLoading ? 'Loading…' : 'Load all dashboards'),
                   ),
                 ],
               ),
@@ -268,7 +283,6 @@ class _SuperAdminDashScreenState extends State<SuperAdminDashScreen> {
             ),
           );
         },
-      ),
     );
   }
 }

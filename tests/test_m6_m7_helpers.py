@@ -10,6 +10,8 @@ from backend.shared.broadcast_gating import (
     plan_allows_broadcast,
     validate_template_only_body,
 )
+import pytest
+
 from backend.shared.ops_alerts import insert_ops_alert_event
 
 
@@ -35,8 +37,13 @@ def test_validate_template_only_body() -> None:
     )[0] is False
 
 
-def test_insert_ops_alert_event_mock_conn() -> None:
-    """Smoke: single execute path + IntegrityError swallowed by caller pattern."""
+def test_insert_ops_alert_event_mock_conn(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Smoke: insert path; SOP auto-trigger mocked out."""
+
+    monkeypatch.setattr(
+        "backend.shared.ops_alerts.maybe_trigger_sop_run_for_alert",
+        lambda *a, **k: None,
+    )
 
     class _R:
         def __init__(self) -> None:

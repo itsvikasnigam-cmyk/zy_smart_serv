@@ -200,11 +200,11 @@ Blueprint calls for an **Admin → Control Plane** experience (not only REST). T
 
 **Chat H (2026-05-14):** **`SuperAdminControlPlaneScreen`** — per-panel “Needs: …” + explicit **no admin GET/PUT routes → no Flutter editors**; **M9** phase-2 / day-1 seed / PDF = Stem + **Chat I** + **Chat L** (no extra UI hooks unless Stem assigns).
 
-- [ ] **Runtime config editor**: key/value by type, validation, last editor + timestamp, **revert** using `ops_runtime_config_audit`.
-- [ ] **Pricing panel (India)**: `pricing.in.*` minor units, live **preview** (“UPI = ₹X”, “Card = ₹Y”).
-- [ ] **Debounce panel**: seconds, max, adaptive toggles.
-- [ ] **Urgent bypass panel**: keywords + intents arrays (`routing.urgent_*` or aligned keys).
-- [ ] **AI fallback panel**: enable, judge, band, `max_rate_per_client`.
+- [x] **Runtime config editor (API):** **`GET/PUT /ops/runtime-config/{key}`** + audit (**ops_api**). **Flutter (Chat H):** **`SuperAdminControlPlaneScreen`** loads/saves debounce, urgent, AI fallback, needs-owner reply, typing hard lock.
+- [ ] **Pricing panel (India)**: `pricing.in.*` minor units, live **preview** (“UPI = ₹X”, “Card = ₹Y”) — keys not seeded yet.
+- [x] **Debounce panel**: Flutter editors for **`debounce.*`** / **`debounce.adaptive.*`**.
+- [x] **Urgent bypass panel**: Flutter JSON editor for **`ai.urgent_bypass_substrings`**.
+- [x] **AI fallback panel**: Flutter toggles/fields for **`ai.fallback.*`** + daily cap key.
 - [x] **Client dashboard (Flutter)**: usage, handoffs, missing-data hotspots, agent performance charts — **Chat G v1**: **`ClientDashboardScreen`** wired to **`GET /dash/client/*`** (`401` logout, `404` mock + banner); richer charts TBD.
 - [x] **Super-admin dashboard (Flutter Android + Windows)**: **Chat H** — charts from real **`GET /dash/admin/*`** JSON (`DashDictBarCard` for `Map<String,int>`, **`DashMessageTotalsCard`** stacked bar for `hourly_system_last_24h`, **`DashKpiRow`**, Raw JSON dialog; **`SuperAdminDashScreen`**); richer **MRR/revenue** visuals when **Chat J** replaces placeholder aggregates.
 

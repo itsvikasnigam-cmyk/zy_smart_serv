@@ -1,4 +1,4 @@
-"""M7: durable alert rows + logging (paging / SOP auto-trigger is phase 2 — see HANDOFF)."""
+"""M7: durable alert rows + logging; M9: SOP auto-trigger on new alerts (see ``sop_alert_trigger``)."""
 
 from __future__ import annotations
 
@@ -9,6 +9,8 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.exc import IntegrityError
+
+from backend.shared.sop_alert_trigger import maybe_trigger_sop_run_for_alert
 
 log = logging.getLogger("ops_alerts")
 
@@ -47,6 +49,16 @@ def insert_ops_alert_event(
     except IntegrityError:
         return False
     log.warning("ops_alert %s [%s] %s", alert_type, severity, summary)
+    try:
+        maybe_trigger_sop_run_for_alert(
+            conn,
+            alert_type=alert_type,
+            summary=summary,
+            detail=detail,
+            dedupe_key=dk,
+        )
+    except Exception:
+        log.exception("sop auto-trigger failed for alert_type=%s", alert_type)
     return True
 
 
