@@ -411,14 +411,15 @@ class ClientApiRepository {
   Future<List<MarketingOptIn>> listBroadcastOptIn({
     required String token,
     required UserModel user,
-    required String superClientId,
+    String? superClientId,
     bool? optedIn,
     int limit = 100,
   }) async {
-    final q = <String, String>{
-      'client_id': superClientId,
-      'limit': '$limit',
-    };
+    final q = <String, String>{'limit': '$limit'};
+    final scope = _clientQuery(user.role, superClientId);
+    if (scope != null) {
+      q.addAll(scope);
+    }
     if (optedIn != null) {
       q['opted_in'] = optedIn.toString();
     }
@@ -436,12 +437,12 @@ class ClientApiRepository {
   Future<MarketingOptIn> putBroadcastOptIn({
     required String token,
     required UserModel user,
-    required String superClientId,
+    String? superClientId,
     required String customerPhoneE164,
     required bool optedIn,
     String? source,
   }) async {
-    final uri = config.rest('/broadcast/opt-in', {'client_id': superClientId});
+    final uri = config.rest('/broadcast/opt-in', _clientQuery(user.role, superClientId));
     final res = await http.put(
       uri,
       headers: _headers(token),
@@ -460,13 +461,15 @@ class ClientApiRepository {
   Future<List<BroadcastCampaign>> listBroadcastCampaigns({
     required String token,
     required UserModel user,
-    required String superClientId,
+    String? superClientId,
     int limit = 50,
   }) async {
-    final uri = config.rest('/broadcast/campaigns', {
-      'client_id': superClientId,
-      'limit': '$limit',
-    });
+    final q = <String, String>{'limit': '$limit'};
+    final scope = _clientQuery(user.role, superClientId);
+    if (scope != null) {
+      q.addAll(scope);
+    }
+    final uri = config.rest('/broadcast/campaigns', q);
     final res = await http.get(uri, headers: _headers(token));
     if (res.statusCode != 200) {
       throw ApiException(res.statusCode, res.body);
@@ -480,13 +483,13 @@ class ClientApiRepository {
   Future<BroadcastCampaign> createBroadcastCampaign({
     required String token,
     required UserModel user,
-    required String superClientId,
+    String? superClientId,
     required String fromWaNumberId,
     required String templateName,
     required String templateLanguage,
     required List<String> targetChatIds,
   }) async {
-    final uri = config.rest('/broadcast/campaigns', {'client_id': superClientId});
+    final uri = config.rest('/broadcast/campaigns', _clientQuery(user.role, superClientId));
     final res = await http.post(
       uri,
       headers: _headers(token),

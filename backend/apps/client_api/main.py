@@ -23,6 +23,7 @@ from backend.shared.db import db_ping
 from .events import hub, poller
 from .routes_auth import router as auth_router
 from .routes_broadcast import router as broadcast_router
+from .routes_signup import router as signup_router
 from .routes_dash import router as dash_router
 from .routes_inbox import router as inbox_router
 from .routes_ws import router as ws_router
@@ -86,6 +87,7 @@ def ws_subscribers() -> dict[str, int]:
 
 
 app.include_router(auth_router)
+app.include_router(signup_router)
 app.include_router(inbox_router)
 app.include_router(broadcast_router)
 app.include_router(dash_router)

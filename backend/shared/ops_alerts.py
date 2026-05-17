@@ -10,6 +10,7 @@ from sqlalchemy import text
 from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.exc import IntegrityError
 
+from backend.shared.ops_alert_pager import maybe_page_slack_for_alert
 from backend.shared.sop_alert_trigger import maybe_trigger_sop_run_for_alert
 
 log = logging.getLogger("ops_alerts")
@@ -59,6 +60,16 @@ def insert_ops_alert_event(
         )
     except Exception:
         log.exception("sop auto-trigger failed for alert_type=%s", alert_type)
+    try:
+        maybe_page_slack_for_alert(
+            conn,
+            alert_type=alert_type,
+            severity=severity,
+            summary=summary,
+            detail=detail,
+        )
+    except Exception:
+        log.exception("slack pager failed for alert_type=%s", alert_type)
     return True
 
 

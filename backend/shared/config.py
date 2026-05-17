@@ -150,6 +150,10 @@ class Settings(BaseSettings):
         ge=15.0,
         description="Sleep between alert_eval_worker evaluations (M7 spike → ops_alert_events).",
     )
+    ops_alert_slack_webhook_url: str = Field(
+        default="",
+        description="Optional Slack incoming webhook for new ops_alert_events (overrides DB if set).",
+    )
 
     # ai_engine (M1): optional OpenAI-compatible chat completions (primary + judge).
     # When AI_LLM_API_KEY is empty, /ai/respond stays on deterministic routing for all paths.

@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../state/session_controller.dart';
 import 'connection_settings_screen.dart';
 import 'owner_billing_screen.dart';
+import 'owner_broadcast_screen.dart';
 
 class AccountScreen extends StatelessWidget {
   const AccountScreen({super.key});
@@ -47,6 +48,20 @@ class AccountScreen extends StatelessWidget {
             );
           },
         ),
+        if (user.role == 'owner')
+          ListTile(
+            leading: const Icon(Icons.campaign_outlined),
+            title: const Text('Broadcast'),
+            subtitle: const Text('Opt-in + template campaigns'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () {
+              Navigator.of(context).push(
+                MaterialPageRoute<void>(
+                  builder: (_) => const OwnerBroadcastScreen(),
+                ),
+              );
+            },
+          ),
         const Divider(),
         SwitchListTile(
           title: const Text('WebSocket'),
