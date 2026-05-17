@@ -68,4 +68,30 @@ class BillingApiRepository {
     final list = map['invoices'] as List<dynamic>? ?? [];
     return list.map((e) => e as Map<String, dynamic>).toList();
   }
+
+  Future<Map<String, dynamic>> createRazorpayCheckout({
+    required String token,
+    required UserModel user,
+    required int amountPaise,
+    String? superClientId,
+    String currency = 'INR',
+  }) async {
+    final uri = config.rest('/billing/razorpay/create-checkout', _clientQuery(user.role, superClientId));
+    final res = await http.post(
+      uri,
+      headers: _headers(token),
+      body: jsonEncode({
+        'amount_paise': amountPaise,
+        'currency': currency,
+        'notes': <String, String>{},
+      }),
+    );
+    if (res.statusCode == 401) {
+      throw ApiUnauthorizedException();
+    }
+    if (res.statusCode != 200) {
+      throw ApiException(res.statusCode, res.body);
+    }
+    return jsonDecode(res.body) as Map<String, dynamic>;
+  }
 }

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import os
 import sys
 
@@ -21,16 +22,17 @@ def main() -> int:
       python backend/tools/dev_seed.py --meta-phone-number-id <PHONE_NUMBER_ID>
     """
 
-    args = sys.argv[1:]
-    if "--meta-phone-number-id" not in args:
-        print("Missing required arg: --meta-phone-number-id <PHONE_NUMBER_ID>")
-        return 2
-    i = args.index("--meta-phone-number-id")
-    try:
-        meta_phone_number_id = args[i + 1].strip()
-    except Exception:
-        print("Missing value after --meta-phone-number-id")
-        return 2
+    parser = argparse.ArgumentParser(description="Seed api_clients + wa_numbers for Meta routing.")
+    parser.add_argument("--meta-phone-number-id", required=True)
+    parser.add_argument(
+        "--trial-days",
+        type=int,
+        default=14,
+        help="Set api_clients.trial_end to now+N days (default 14)",
+    )
+    ns = parser.parse_args()
+    meta_phone_number_id = ns.meta_phone_number_id.strip()
+    trial_days = max(1, int(ns.trial_days))
 
     if not meta_phone_number_id:
         print("meta phone_number_id cannot be empty")
@@ -81,12 +83,12 @@ def main() -> int:
                 client_id = conn.execute(
                     text(
                         """
-                        INSERT INTO api_clients (business_name, category, entitlement_plan)
-                        VALUES (:bn, :cat, 'trial')
+                        INSERT INTO api_clients (business_name, category, entitlement_plan, trial_end)
+                        VALUES (:bn, :cat, 'trial', timezone('utc', now()) + (:d || ' days')::interval)
                         RETURNING id
                         """
                     ),
-                    {"bn": business_name, "cat": category},
+                    {"bn": business_name, "cat": category, "d": trial_days},
                 ).scalar_one()
                 conn.execute(
                     text(
@@ -124,12 +126,12 @@ def main() -> int:
         client_id = conn.execute(
             text(
                 """
-                INSERT INTO api_clients (business_name, category, entitlement_plan)
-                VALUES (:bn, :cat, 'trial')
+                INSERT INTO api_clients (business_name, category, entitlement_plan, trial_end)
+                VALUES (:bn, :cat, 'trial', timezone('utc', now()) + (:d || ' days')::interval)
                 RETURNING id
                 """
             ),
-            {"bn": business_name, "cat": category},
+            {"bn": business_name, "cat": category, "d": trial_days},
         ).scalar_one()
 
         wa_id = conn.execute(
@@ -147,6 +149,7 @@ def main() -> int:
     print(f"CLIENT_ID={client_id}")
     print(f"WA_NUMBER_ID={wa_id}")
     print(f"META_PHONE_NUMBER_ID={meta_phone_number_id}")
+    print(f"TRIAL_DAYS={trial_days}")
     return 0
 
 

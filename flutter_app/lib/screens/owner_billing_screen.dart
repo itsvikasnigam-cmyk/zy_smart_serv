@@ -26,6 +26,42 @@ class _OwnerBillingScreenState extends State<OwnerBillingScreen> {
     return '$sym${(minor / 100).toStringAsFixed(2)}';
   }
 
+  Future<void> _razorpayTestCheckout() async {
+    final session = context.read<SessionController>();
+    final token = session.token;
+    final user = session.user;
+    if (token == null || user == null) return;
+    setState(() => _error = null);
+    try {
+      final out = await session.billingApi.createRazorpayCheckout(
+        token: token,
+        user: user,
+        amountPaise: 10000,
+      );
+      if (!mounted) return;
+      final order = out['order'] as Map<String, dynamic>? ?? {};
+      final keyId = '${out['key_id'] ?? ''}';
+      await showDialog<void>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Razorpay test order'),
+          content: SelectableText(
+            'key_id: $keyId\n'
+            'order_id: ${order['id'] ?? '—'}\n'
+            'amount: ${order['amount'] ?? '—'} paise\n\n'
+            'Use Razorpay sandbox checkout with these values, or Razorpay Dashboard test mode.',
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('OK')),
+          ],
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _error = e.toString());
+    }
+  }
+
   Future<void> _load() async {
     final session = context.read<SessionController>();
     final token = session.token;
@@ -129,6 +165,28 @@ class _OwnerBillingScreenState extends State<OwnerBillingScreen> {
               ),
             ),
           ],
+          const SizedBox(height: 12),
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text('Upgrade (sandbox)', style: theme.textTheme.titleMedium),
+                  const SizedBox(height: 8),
+                  const Text(
+                    'Creates a Razorpay order via billing_api. Complete payment in Razorpay '
+                    'sandbox with the order id shown. Webhook must hit your public 8086 URL.',
+                  ),
+                  const SizedBox(height: 8),
+                  FilledButton(
+                    onPressed: _loading ? null : _razorpayTestCheckout,
+                    child: const Text('Create Razorpay test order (₹100)'),
+                  ),
+                ],
+              ),
+            ),
+          ),
           const SizedBox(height: 12),
           Text('Invoices (${_invoices?.length ?? 0})', style: theme.textTheme.titleMedium),
           const SizedBox(height: 8),
