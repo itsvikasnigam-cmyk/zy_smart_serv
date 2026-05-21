@@ -12,10 +12,14 @@ Set-Location $root
 $env:PYTHONPATH = $root
 
 function Import-DotEnvFile {
-    param([string]$Path)
+    param(
+        [string]$Path,
+        [switch]$OnlyIfUnset
+    )
     if (-not (Test-Path $Path)) {
         return $false
     }
+    $loadedAny = $false
     Get-Content $Path | ForEach-Object {
         $line = $_.Trim()
         if ($line -eq '' -or $line.StartsWith('#')) {
@@ -33,22 +37,36 @@ function Import-DotEnvFile {
         if ($val.StartsWith("'") -and $val.EndsWith("'")) {
             $val = $val.Substring(1, $val.Length - 2)
         }
-        if ($name) {
-            Set-Item -Path "env:$name" -Value $val
+        if (-not $name) {
+            return
         }
+        if ($OnlyIfUnset -and (Test-Path "env:$name")) {
+            $existing = (Get-Item "env:$name").Value
+            if ($null -ne $existing -and "$existing".Trim() -ne '') {
+                return
+            }
+        }
+        Set-Item -Path "env:$name" -Value $val
+        $loadedAny = $true
     }
-    return $true
+    return $loadedAny
 }
 
 $rootEnv = Join-Path $root '.env'
 $backendEnv = Join-Path $root 'backend\.env'
-if (Import-DotEnvFile $rootEnv) {
+$loadedRoot = Import-DotEnvFile $rootEnv
+if ($loadedRoot) {
     Write-Host 'Loaded: .env (repo root)'
 }
-elseif (Import-DotEnvFile $backendEnv) {
-    Write-Host 'Loaded: backend\.env (no root .env - OK for dev)'
+if (Import-DotEnvFile $backendEnv -OnlyIfUnset) {
+    if ($loadedRoot) {
+        Write-Host 'Merged: backend\.env (fills unset vars only)'
+    }
+    else {
+        Write-Host 'Loaded: backend\.env (no root .env - OK for dev)'
+    }
 }
-else {
+elseif (-not $loadedRoot) {
     Write-Host 'No .env found - using defaults below'
 }
 
@@ -62,5 +80,16 @@ if (-not $env:APP_ENV) {
     $env:APP_ENV = 'dev'
 }
 
+# Option C: active code/data root (now = this repo on C:). Later prod on D: set ZY_BASE_DIR in backend\.env.
+if (-not $env:ZY_BASE_DIR) {
+    $env:ZY_BASE_DIR = $root
+}
+
 Write-Host "PYTHONPATH=$env:PYTHONPATH"
 Write-Host "DATABASE_URL=$env:DATABASE_URL"
+Write-Host "ZY_BASE_DIR=$env:ZY_BASE_DIR"
+
+$localOllama = Join-Path $env:ZY_BASE_DIR 'vendor\ollama\ollama.exe'
+if (Test-Path $localOllama) {
+    Write-Host "Local Ollama: $localOllama (API :11435 - run .\scripts\start_ollama_local.ps1)"
+}

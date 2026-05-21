@@ -29,6 +29,7 @@ from sqlalchemy.exc import IntegrityError
 
 from backend.shared.config import settings
 from backend.shared.db import engine
+from backend.shared.inbox_typing_lock import has_active_agent_typing
 from backend.shared.inbox_notify import (
     insert_assignment_audit,
     insert_notification,
@@ -137,6 +138,9 @@ def _to_list_item(row: dict[str, Any]) -> ChatListItem:
         created_at=row["created_at"],
         last_message_preview=row.get("last_message_preview"),
         ai_paused_until=row.get("ai_paused_until"),
+        pending_since=row.get("pending_since"),
+        sla_breach_at=row.get("sla_breach_at"),
+        agent_typing_active=bool(row.get("agent_typing_active")),
     )
 
 
@@ -359,7 +363,7 @@ def list_chats(
     sql = f"""
         SELECT c.id::text, c.client_id::text, c.customer_phone, c.state,
                c.assigned_agent_id::text, c.last_customer_msg_at, c.last_outbound_at, c.created_at,
-               c.ai_paused_until,
+               c.ai_paused_until, c.pending_since, c.sla_breach_at,
                (SELECT text FROM inbox_messages
                   WHERE chat_id = c.id ORDER BY timestamp DESC LIMIT 1) AS last_preview
         FROM inbox_chats c
@@ -380,7 +384,9 @@ def list_chats(
             last_outbound_at=r[6],
             created_at=r[7],
             ai_paused_until=r[8],
-            last_message_preview=r[9],
+            pending_since=r[9],
+            sla_breach_at=r[10],
+            last_message_preview=r[11],
         )
         for r in rows
     ]
@@ -403,7 +409,8 @@ def chat_detail(
             text(
                 """
                 SELECT id::text, client_id::text, customer_phone, state, assigned_agent_id::text,
-                       last_customer_msg_at, last_outbound_at, created_at, ai_paused_until
+                       last_customer_msg_at, last_outbound_at, created_at, ai_paused_until,
+                       pending_since, sla_breach_at
                 FROM inbox_chats
                 WHERE id = CAST(:cid AS uuid) AND client_id = CAST(:client AS uuid)
                 """
@@ -486,6 +493,7 @@ def chat_detail(
         ]
 
         active = _active_assignment(conn, chat_id)
+        typing_active, _ = has_active_agent_typing(conn, chat_id)
 
     item = ChatListItem(
         id=chat[0],
@@ -497,6 +505,9 @@ def chat_detail(
         last_outbound_at=chat[6],
         created_at=chat[7],
         ai_paused_until=chat[8],
+        pending_since=chat[9],
+        sla_breach_at=chat[10],
+        agent_typing_active=typing_active,
     )
     return ChatDetail(
         chat=item,
@@ -1049,7 +1060,11 @@ def resolve_chat(
                 UPDATE inbox_chats
                 SET state = 'CLOSED',
                     assigned_agent_id = NULL,
-                    handoff_reason = COALESCE(:reason, handoff_reason)
+                    handoff_reason = COALESCE(:reason, handoff_reason),
+                    owner_wait_4h_at = NULL,
+                    owner_wait_8h_at = NULL,
+                    sla_breach_at = NULL,
+                    pending_since = NULL
                 WHERE id = CAST(:cid AS uuid)
                 """
             ),
@@ -1279,7 +1294,8 @@ def reply(
                         text(
                             """
                             UPDATE inbox_chats
-                            SET ai_paused_until = now() + make_interval(hours => :ph)
+                            SET ai_paused_until = now() + make_interval(hours => :ph),
+                                sla_breach_at = NULL
                             WHERE id = CAST(:cid AS uuid)
                             """
                         ),
@@ -1321,7 +1337,8 @@ def reply(
                         UPDATE inbox_chats
                         SET last_outbound_at = now(),
                             state = 'AGENT_ACTIVE',
-                            ai_paused_until = now() + make_interval(hours => :ph)
+                            ai_paused_until = now() + make_interval(hours => :ph),
+                            sla_breach_at = NULL
                         WHERE id = CAST(:cid AS uuid)
                         """
                     ),
@@ -1400,7 +1417,8 @@ def reply(
                 UPDATE inbox_chats
                 SET last_outbound_at = now(),
                     state = 'AGENT_ACTIVE',
-                    ai_paused_until = now() + make_interval(hours => :ph)
+                    ai_paused_until = now() + make_interval(hours => :ph),
+                    sla_breach_at = NULL
                 WHERE id = CAST(:cid AS uuid)
                 """
             ),

@@ -14,7 +14,15 @@ from sqlalchemy import text
 from sqlalchemy.engine import Connection
 
 from backend.shared.config import settings
+from backend.shared.cost_model import (
+    COST_MODEL_KEY,
+    ai_cost_per_invocation_inr,
+    alert_threshold_inr,
+    merge_cost_model,
+    monthly_revenue_for_plan_inr,
+)
 from backend.shared.db import engine
+from backend.shared.ops_alerts import insert_ops_alert_event
 
 log = logging.getLogger("metrics_rollup_worker")
 
@@ -160,6 +168,77 @@ def rollup_hourly_system(conn: Connection, hours: list[datetime]) -> None:
         )
 
 
+def _load_cost_model(conn: Connection) -> dict:
+    row = conn.execute(
+        text("SELECT value_json FROM ops_runtime_config WHERE key = :key LIMIT 1"),
+        {"key": COST_MODEL_KEY},
+    ).fetchone()
+    return merge_cost_model(row[0] if row else None)
+
+
+def rollup_daily_costs(conn: Connection, days: list[date]) -> None:
+    model = _load_cost_model(conn)
+    cost_per_ai = ai_cost_per_invocation_inr(model)
+    threshold = alert_threshold_inr(model)
+    for d in days:
+        rows = conn.execute(
+            text(
+                """
+                SELECT
+                  m.client_id::text,
+                  COALESCE(a.entitlement_plan::text, 'trial') AS entitlement_plan,
+                  COUNT(t.id)::int AS ai_invocations
+                FROM metrics_daily_client m
+                INNER JOIN api_clients a ON a.id = m.client_id
+                LEFT JOIN telemetry_trace_logs t
+                  ON t.client_id = m.client_id
+                 AND t.service = 'ai_engine'
+                 AND t.route = '/ai/respond'
+                 AND t.status = 'ok'
+                 AND (timezone('utc', t.created_at))::date = m.metric_date
+                WHERE m.metric_date = :d
+                GROUP BY m.client_id, a.entitlement_plan
+                """
+            ),
+            {"d": d},
+        ).all()
+        for client_id, entitlement, ai_invocations in rows:
+            inv = int(ai_invocations or 0)
+            cost = round(inv * cost_per_ai, 4)
+            revenue = round(monthly_revenue_for_plan_inr(model, str(entitlement)) / 30.0, 4)
+            margin = round(revenue - cost, 4)
+            conn.execute(
+                text(
+                    """
+                    UPDATE metrics_daily_client
+                    SET ai_invocations = :inv,
+                        estimated_ai_cost_inr = :cost,
+                        estimated_revenue_inr = :rev,
+                        estimated_margin_inr = :margin,
+                        updated_at = now()
+                    WHERE client_id = CAST(:cid AS uuid)
+                      AND metric_date = :d
+                    """
+                ),
+                {"cid": client_id, "d": d, "inv": inv, "cost": cost, "rev": revenue, "margin": margin},
+            )
+            if threshold > 0 and cost >= threshold:
+                insert_ops_alert_event(
+                    conn,
+                    alert_type="CLIENT_DAILY_AI_COST_THRESHOLD",
+                    severity="warning",
+                    summary=f"Client AI cost crossed daily threshold: {cost:.2f} INR",
+                    detail={
+                        "client_id": client_id,
+                        "metric_date": str(d),
+                        "estimated_ai_cost_inr": cost,
+                        "threshold_inr": threshold,
+                        "ai_invocations": inv,
+                    },
+                    dedupe_key=f"client_ai_cost:{client_id}:{d}",
+                )
+
+
 def run_once() -> None:
     days = _utc_days(settings.metrics_rollup_lookback_days)
     hours = _utc_hour_buckets(settings.metrics_rollup_hourly_lookback)
@@ -167,6 +246,7 @@ def run_once() -> None:
         rollup_daily_clients(conn, days)
         rollup_daily_agents(conn, days)
         rollup_hourly_system(conn, hours)
+        rollup_daily_costs(conn, days)
     log.info(
         "metrics rollup ok (daily days=%s hourly buckets=%s)",
         len(days),

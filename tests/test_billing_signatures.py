@@ -4,7 +4,11 @@ import hashlib
 import hmac
 import json
 
+import time
+
 from backend.apps.billing_api.verify_signatures import (
+    build_paddle_signature,
+    build_razorpay_signature,
     paddle_event_id,
     paddle_event_type,
     razorpay_event_id,
@@ -29,10 +33,29 @@ def test_verify_razorpay_rejects_missing_header_or_secret() -> None:
     assert verify_razorpay_signature(body, "abc", "") is False
 
 
+def test_verify_paddle_rejects_stale_timestamp() -> None:
+    secret = "pdl_ntfset_testsecret"
+    body = b'{"event_id":"evt_old"}'
+    old_ts = str(int(time.time()) - 10_000)
+    signed = f"{old_ts}:".encode("utf-8") + body
+    h1_hex = hmac.new(secret.encode("utf-8"), msg=signed, digestmod=hashlib.sha256).hexdigest()
+    header = f"ts={old_ts};h1={h1_hex}"
+    assert verify_paddle_signature(body, header, secret, max_skew_seconds=300) is False
+
+
+def test_build_signatures_roundtrip() -> None:
+    secret = "whsec_x"
+    body = b'{"id":"evt_1"}'
+    rz = build_razorpay_signature(body, secret)
+    assert verify_razorpay_signature(body, rz, secret)
+    pdl = build_paddle_signature(body, secret)
+    assert verify_paddle_signature(body, pdl, secret)
+
+
 def test_verify_paddle_signature_accepts_ts_h1_format() -> None:
     secret = "pdl_ntfset_testsecret"
     body = b'{"event_id":"evt_pdl_1","event_type":"subscription.updated","data":{"id":"sub_1"}}'
-    ts = "1700000000"
+    ts = str(int(time.time()))
     signed = f"{ts}:".encode("utf-8") + body
     h1 = hmac.new(secret.encode("utf-8"), msg=signed, digestmod=hashlib.sha256).hexdigest()
     header = f"ts={ts};h1={h1}"

@@ -30,7 +30,12 @@ def main() -> int:
         daily = conn.execute(
             text(
                 """
-                SELECT metric_date, COUNT(*)::int
+                SELECT metric_date,
+                       COUNT(*)::int,
+                       COALESCE(SUM(ai_invocations), 0)::bigint,
+                       COALESCE(SUM(estimated_ai_cost_inr), 0)::float,
+                       COALESCE(SUM(estimated_revenue_inr), 0)::float,
+                       COALESCE(SUM(estimated_margin_inr), 0)::float
                 FROM metrics_daily_client
                 GROUP BY metric_date
                 ORDER BY metric_date DESC
@@ -47,7 +52,10 @@ def main() -> int:
     if not daily:
         print("  (empty — no messages in lookback window, or run rollup after traffic)")
     for d in daily:
-        print(f"  {d[0]}  rows={d[1]}")
+        print(
+            f"  {d[0]}  rows={d[1]} ai_calls={d[2]} "
+            f"cost_inr={d[3]:.4f} revenue_inr={d[4]:.4f} margin_inr={d[5]:.4f}"
+        )
     print("metrics_hourly_system (newest 5 hours):")
     if not hourly:
         print("  (empty — run: python backend\\tools\\run_metrics_rollup_once.py)")

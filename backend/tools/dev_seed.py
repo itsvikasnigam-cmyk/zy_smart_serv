@@ -27,8 +27,13 @@ def main() -> int:
     parser.add_argument(
         "--trial-days",
         type=int,
-        default=14,
-        help="Set api_clients.trial_end to now+N days (default 14)",
+        default=3,
+        help="Set api_clients.trial_end to now+N days (default 3, v5.3 / phase 2)",
+    )
+    parser.add_argument(
+        "--force-meta-phone-number-id",
+        action="store_true",
+        help="Overwrite an existing wa_numbers.meta_phone_number_id (default: keep current id)",
     )
     ns = parser.parse_args()
     meta_phone_number_id = ns.meta_phone_number_id.strip()
@@ -79,6 +84,28 @@ def main() -> int:
         ).fetchone()
         if row:
             wa_id, cid = row[0], row[1]
+            current_meta = conn.execute(
+                text(
+                    """
+                    SELECT meta_phone_number_id
+                    FROM wa_numbers
+                    WHERE id = CAST(:wid AS uuid)
+                    """
+                ),
+                {"wid": str(wa_id)},
+            ).scalar_one()
+            if (
+                current_meta
+                and current_meta != meta_phone_number_id
+                and not ns.force_meta_phone_number_id
+            ):
+                print("SKIP: keeping existing meta_phone_number_id (will not overwrite).")
+                print(f"  current: {current_meta}")
+                print(f"  requested: {meta_phone_number_id}")
+                print("Use link_meta_phone.py for your real Meta id, or pass --force-meta-phone-number-id.")
+                print(f"CLIENT_ID={cid}")
+                print(f"WA_NUMBER_ID={wa_id}")
+                return 0
             if cid is None:
                 client_id = conn.execute(
                     text(

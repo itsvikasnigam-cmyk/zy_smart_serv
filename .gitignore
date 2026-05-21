@@ -26,8 +26,20 @@ Thumbs.db
 
 # Cursor workspace artifacts (not application source)
 agent-transcripts/
+agent-tools/
 mcps/
 terminals/
+gate1_probe_result.txt
+
+# Gate 2 — local Ollama (large; lives under ZY_BASE_DIR, copied with move_to_d_drive)
+vendor/ollama/
+models/ollama/
+
+# Option C runtime dirs (logs/exports under ZY_BASE_DIR)
+logs/
+exports/
+models/
+!models/.gitkeep
 
 # Flutter: duplicate scaffold at repo root (canonical app is under mobile/)
 zy_smart_client/

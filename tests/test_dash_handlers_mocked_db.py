@@ -314,6 +314,45 @@ def test_dash_admin_collections_handler(
     _assert_queue_drained(queue)
 
 
+def test_dash_admin_cost_margin_handler(
+    monkeypatch: pytest.MonkeyPatch, super_admin: CurrentUser
+) -> None:
+    queue: list[_ExecResult] = [
+        _ExecResult(
+            all_rows=[
+                (
+                    "17682c77-1524-4ebd-94e5-958e7f37ac60",
+                    "ZY Test",
+                    "starter",
+                    10,
+                    1.5,
+                    33.3,
+                    31.8,
+                )
+            ]
+        ),
+    ]
+    monkeypatch.setattr(
+        "backend.apps.client_api.routes_dash.engine",
+        type("_E", (), {"begin": lambda self: _FakeBegin(queue)})(),
+    )
+
+    app = _minimal_dash_app()
+    app.dependency_overrides[get_current_user] = lambda: super_admin
+    try:
+        with TestClient(app) as client:
+            r = client.get("/dash/admin/cost-margin")
+            assert r.status_code == 200, r.text
+            b = r.json()
+            assert b["period_days"] == 30
+            assert b["rows"][0]["business_name"] == "ZY Test"
+            assert b["totals"]["estimated_margin_inr"] == 31.8
+    finally:
+        app.dependency_overrides.clear()
+
+    _assert_queue_drained(queue)
+
+
 def test_dash_admin_provider_razorpay_handler(
     monkeypatch: pytest.MonkeyPatch, super_admin: CurrentUser
 ) -> None:

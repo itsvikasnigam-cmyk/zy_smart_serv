@@ -28,6 +28,8 @@ from backend.shared.db import db_ping
 
 from .routes_extended import router as ops_extended_router
 from .routes_ops import router as ops_router
+from .routes_releases import router as ops_releases_router
+from .routes_tasks import router as ops_tasks_router
 
 
 def _cors_origins() -> list[str]:
@@ -70,3 +72,5 @@ def ready() -> str:
 
 app.include_router(ops_router)
 app.include_router(ops_extended_router)
+app.include_router(ops_tasks_router)
+app.include_router(ops_releases_router)

@@ -10,6 +10,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
 from backend.shared.db import engine
+from backend.shared.product_config import load_trial_days_default
 
 from .auth import hash_password
 
@@ -24,7 +25,12 @@ class SignupIn(BaseModel):
     business_name: str = Field(min_length=1, max_length=500)
     category: str | None = Field(default="general", max_length=200)
     owner_phone_e164: str | None = Field(default=None, max_length=20)
-    trial_days: int = Field(default=14, ge=1, le=90)
+    trial_days: int | None = Field(
+        default=None,
+        ge=1,
+        le=90,
+        description="Omit to use ops_runtime_config product.trial_days_default (phase 2 default 3).",
+    )
 
 
 class SignupOut(BaseModel):
@@ -40,11 +46,12 @@ class SignupOut(BaseModel):
 def signup(body: SignupIn) -> SignupOut:
     """Create ``api_clients`` (trial) + owner ``api_users`` row. OTP/team/catalog remain future work."""
     email = body.email.strip().lower()
-    trial_end = datetime.now(timezone.utc) + timedelta(days=body.trial_days)
     pw_hash = hash_password(body.password)
 
     try:
         with engine.begin() as conn:
+            trial_days = body.trial_days if body.trial_days is not None else load_trial_days_default(conn)
+            trial_end = datetime.now(timezone.utc) + timedelta(days=trial_days)
             exists = conn.execute(
                 text("SELECT 1 FROM api_users WHERE lower(email) = :e LIMIT 1"),
                 {"e": email},

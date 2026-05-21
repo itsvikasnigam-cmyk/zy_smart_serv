@@ -20,6 +20,15 @@ def utc_calendar_date(ts: datetime) -> date:
     return ts.astimezone(timezone.utc).date()
 
 
+def _coerce_limit_int(value: Any) -> int | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def load_daily_inbound_limits_json(conn: Connection) -> dict[str, Any]:
     row = conn.execute(
         text("SELECT value_json FROM ops_runtime_config WHERE key = :k"),
@@ -31,9 +40,15 @@ def load_daily_inbound_limits_json(conn: Connection) -> dict[str, Any]:
     if isinstance(raw, dict):
         return raw
     if isinstance(raw, str):
-        return json.loads(raw)
-    # JSONB may come back as dict already via driver
-    return dict(raw)  # type: ignore[arg-type]
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    try:
+        return dict(raw)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return {}
 
 
 def plan_soft_hard(limits: dict[str, Any], entitlement_plan: str) -> tuple[int | None, int | None]:
@@ -44,11 +59,7 @@ def plan_soft_hard(limits: dict[str, Any], entitlement_plan: str) -> tuple[int |
     entry = limits.get(entitlement_plan) or limits.get("_default")
     if not isinstance(entry, dict):
         return (None, None)
-    sw = entry.get("soft_warn")
-    hb = entry.get("hard_block")
-    soft = int(sw) if sw is not None else None
-    hard = int(hb) if hb is not None else None
-    return (soft, hard)
+    return (_coerce_limit_int(entry.get("soft_warn")), _coerce_limit_int(entry.get("hard_block")))
 
 
 def should_mark_soft(inbound: int, soft: int | None) -> bool:

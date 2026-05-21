@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import text
@@ -17,6 +18,31 @@ from backend.apps.billing_api.verify_signatures import (
 logger = logging.getLogger(__name__)
 
 VALID_ENTITLEMENT = frozenset({"trial", "starter", "growth", "pro", "churned"})
+
+
+def _coerce_timestamptz(value: Any) -> datetime | None:
+    """Razorpay often sends Unix seconds; Paddle sends ISO strings."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+    if isinstance(value, (int, float)):
+        try:
+            return datetime.fromtimestamp(float(value), tz=timezone.utc)
+        except (OSError, OverflowError, ValueError):
+            return None
+    if isinstance(value, str) and value.strip():
+        s = value.strip().replace("Z", "+00:00")
+        try:
+            dt = datetime.fromisoformat(s)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.astimezone(timezone.utc)
+        except ValueError:
+            return None
+    return None
 
 
 def claim_bill_event(
@@ -328,7 +354,7 @@ def process_razorpay_webhook(conn: Connection, payload: dict[str, Any]) -> dict[
                 amount_minor=amt_i,
                 currency=str(cur) if cur else None,
                 status="paid",
-                issued_at=inv.get("paid_at") or inv.get("created_at"),
+                issued_at=_coerce_timestamptz(inv.get("paid_at") or inv.get("created_at")),
                 payload=inv,
             )
             _mark_event(conn, event_row_id, applied=True, error_message=None)
@@ -392,7 +418,7 @@ def process_razorpay_webhook(conn: Connection, payload: dict[str, Any]) -> dict[
                     amount_minor=amt_r,
                     currency=str(ref.get("currency") or "INR"),
                     status="refunded",
-                    issued_at=ref.get("created_at"),
+                    issued_at=_coerce_timestamptz(ref.get("created_at")),
                     payload=ref,
                 )
             _update_api_client_billing(
@@ -425,7 +451,7 @@ def process_razorpay_webhook(conn: Connection, payload: dict[str, Any]) -> dict[
         plan_code = _resolve_plan_code_from_db(conn, "razorpay", plan_id if isinstance(plan_id, str) else None)
 
         status = str(entity.get("status") or "unknown")
-        current_end = entity.get("current_end") or entity.get("charge_at")
+        current_end = _coerce_timestamptz(entity.get("current_end") or entity.get("charge_at"))
 
         if ev_name in (
             "subscription.activated",
@@ -517,7 +543,7 @@ def _rz_subscription_entity(payload: dict[str, Any]) -> dict[str, Any] | None:
     return None
 
 
-def _rz_subscription_entity(payload: dict[str, Any]) -> dict[str, Any] | None:
+def _paddle_custom_data(data: dict[str, Any]) -> dict[str, str]:
     cd = data.get("custom_data")
     if not isinstance(cd, dict):
         return {}
@@ -577,7 +603,7 @@ def process_paddle_webhook(conn: Connection, payload: dict[str, Any]) -> dict[st
                     amount_minor=None,
                     currency=None,
                     status="failed",
-                    issued_at=data.get("created_at") or data.get("updated_at"),
+                    issued_at=_coerce_timestamptz(data.get("created_at") or data.get("updated_at")),
                     payload=data,
                 )
                 _mark_event(conn, event_row_id, applied=True, error_message=None)
@@ -591,7 +617,7 @@ def process_paddle_webhook(conn: Connection, payload: dict[str, Any]) -> dict[st
                     amount_minor=None,
                     currency=None,
                     status="paid",
-                    issued_at=data.get("created_at") or data.get("updated_at"),
+                    issued_at=_coerce_timestamptz(data.get("created_at") or data.get("updated_at")),
                     payload=data,
                 )
                 _mark_event(conn, event_row_id, applied=True, error_message=None)
@@ -613,7 +639,7 @@ def process_paddle_webhook(conn: Connection, payload: dict[str, Any]) -> dict[st
                 amount_minor=None,
                 currency=None,
                 status="refunded",
-                issued_at=data.get("created_at"),
+                issued_at=_coerce_timestamptz(data.get("created_at")),
                 payload=data,
             )
             _update_api_client_billing(
@@ -647,7 +673,7 @@ def process_paddle_webhook(conn: Connection, payload: dict[str, Any]) -> dict[st
         current_billing = data.get("current_billing_period") or {}
         period_ends = None
         if isinstance(current_billing, dict):
-            period_ends = current_billing.get("ends_at")
+            period_ends = _coerce_timestamptz(current_billing.get("ends_at"))
 
         if ev_type.startswith("subscription.") and (
             "canceled" in ev_type or "cancelled" in ev_type.lower()

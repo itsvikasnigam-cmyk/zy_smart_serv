@@ -4,6 +4,7 @@ import json
 import os
 import socket
 import time
+from datetime import datetime
 from typing import Any
 
 import httpx
@@ -12,6 +13,13 @@ from sqlalchemy import text
 from backend.shared.broadcast_gating import validate_template_only_body
 from backend.shared.config import settings
 from backend.shared.db import engine
+from backend.shared.wa_service_window import (
+    POLICY_KEY,
+    ServiceWindowExpiredError,
+    is_session_window_open,
+    merge_service_window_policy,
+    resolve_session_outbound,
+)
 
 
 INSTANCE_ID = os.environ.get("INSTANCE_ID") or socket.gethostname()
@@ -189,12 +197,50 @@ def _claim_one_outbox_row() -> tuple[Any, ...] | None:
                   o.body_text,
                   o.kind,
                   o.attempt_count,
-                  w.meta_phone_number_id
+                  w.meta_phone_number_id,
+                  o.chat_id::text
                 """
             ),
             {"lease_sec": lease},
         ).fetchone()
     return row
+
+
+_policy_cache: tuple[float, dict[str, Any]] | None = None
+
+
+def _load_service_window_policy_cached() -> dict[str, Any]:
+    global _policy_cache
+    now = time.time()
+    if _policy_cache and (now - _policy_cache[0]) < 30.0:
+        return _policy_cache[1]
+    with engine.connect() as conn:
+        row = conn.execute(
+            text("SELECT value_json FROM ops_runtime_config WHERE key = :k LIMIT 1"),
+            {"k": POLICY_KEY},
+        ).fetchone()
+    policy = merge_service_window_policy(row[0] if row else None)
+    _policy_cache = (now, policy)
+    return policy
+
+
+def _chat_window_state(chat_id: str | None) -> tuple[datetime | None, datetime | None]:
+    if not chat_id:
+        return None, None
+    with engine.connect() as conn:
+        row = conn.execute(
+            text(
+                """
+                SELECT customer_service_window_expires_at, last_customer_msg_at
+                FROM inbox_chats
+                WHERE id = CAST(:cid AS uuid)
+                """
+            ),
+            {"cid": chat_id},
+        ).fetchone()
+    if not row:
+        return None, None
+    return row[0], row[1]
 
 
 def _finalize_sent(outbox_id: Any, meta_message_id: str) -> bool:
@@ -305,7 +351,7 @@ def run_once() -> int:
         if not row:
             break
         claimed_any = True
-        outbox_id, to_phone, body_text, kind, _attempt_after_claim, phone_number_id = row
+        outbox_id, to_phone, body_text, kind, _attempt_after_claim, phone_number_id, chat_id = row
 
         if not settings.meta_access_token:
             _finalize_missing_token(outbox_id)
@@ -314,11 +360,38 @@ def run_once() -> int:
             _finalize_missing_phone_row(outbox_id)
             continue
 
+        send_body = str(body_text)
+        send_as_template = str(kind) == "TEMPLATE"
         try:
-            if str(kind) == "TEMPLATE":
-                meta_message_id = _meta_send_template(str(phone_number_id), str(to_phone), str(body_text))
+            if not send_as_template:
+                policy = _load_service_window_policy_cached()
+                expires_at, last_cust = _chat_window_state(str(chat_id) if chat_id else None)
+                window_open = is_session_window_open(
+                    expires_at=expires_at,
+                    last_customer_msg_at=last_cust,
+                    policy=policy,
+                )
+                mode, send_body = resolve_session_outbound(
+                    kind=str(kind),
+                    body_text=str(body_text),
+                    window_open=window_open,
+                    policy=policy,
+                )
+                send_as_template = mode == "template"
+        except ServiceWindowExpiredError as e:
+            _finalize_failure_or_dead(
+                outbox_id,
+                error_code="SERVICE_WINDOW_NO_TEMPLATE",
+                error_detail=f"{e.detail} ({INSTANCE_ID})",
+                fatal=True,
+            )
+            continue
+
+        try:
+            if send_as_template:
+                meta_message_id = _meta_send_template(str(phone_number_id), str(to_phone), send_body)
             else:
-                meta_message_id = _meta_send(str(phone_number_id), str(to_phone), str(body_text))
+                meta_message_id = _meta_send(str(phone_number_id), str(to_phone), send_body)
         except MetaSendFatal as e:
             _finalize_failure_or_dead(
                 outbox_id,

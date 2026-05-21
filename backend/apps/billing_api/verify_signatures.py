@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import time
 from typing import Any
+
+DEFAULT_PADDLE_MAX_SKEW_SECONDS = 300
 
 
 def verify_razorpay_signature(body: bytes, signature_header: str | None, secret: str) -> bool:
@@ -16,10 +19,18 @@ def verify_razorpay_signature(body: bytes, signature_header: str | None, secret:
     return hmac.compare_digest(expected.lower(), signature_header.strip().lower())
 
 
-def verify_paddle_signature(body: bytes, signature_header: str | None, secret: str) -> bool:
+def verify_paddle_signature(
+    body: bytes,
+    signature_header: str | None,
+    secret: str,
+    *,
+    max_skew_seconds: int = DEFAULT_PADDLE_MAX_SKEW_SECONDS,
+    now_unix: int | None = None,
+) -> bool:
     """
     Paddle Billing: ``Paddle-Signature`` header format ``ts=<unix>;h1=<hex>`` where ``h1`` is
     HMAC-SHA256 of ``<ts>:<raw_body>`` (UTF-8) using the notification destination secret.
+    Rejects timestamps outside ``max_skew_seconds`` (replay / clock skew protection).
     """
     if not secret or not signature_header:
         return False
@@ -33,9 +44,29 @@ def verify_paddle_signature(body: bytes, signature_header: str | None, secret: s
     h1 = parts.get("h1")
     if not ts or not h1:
         return False
+    try:
+        ts_int = int(ts)
+    except ValueError:
+        return False
+    now = now_unix if now_unix is not None else int(time.time())
+    if abs(now - ts_int) > max(0, int(max_skew_seconds)):
+        return False
     signed = f"{ts}:".encode("utf-8") + body
     expected = hmac.new(secret.encode("utf-8"), msg=signed, digestmod=hashlib.sha256).hexdigest()
     return hmac.compare_digest(expected.lower(), h1.lower())
+
+
+def build_razorpay_signature(body: bytes, secret: str) -> str:
+    """Dev/test helper: compute ``X-Razorpay-Signature`` for a raw JSON body."""
+    return hmac.new(secret.encode("utf-8"), msg=body, digestmod=hashlib.sha256).hexdigest()
+
+
+def build_paddle_signature(body: bytes, secret: str, *, ts_unix: int | None = None) -> str:
+    """Dev/test helper: compute ``Paddle-Signature`` header value."""
+    ts = str(ts_unix if ts_unix is not None else int(time.time()))
+    signed = f"{ts}:".encode("utf-8") + body
+    h1 = hmac.new(secret.encode("utf-8"), msg=signed, digestmod=hashlib.sha256).hexdigest()
+    return f"ts={ts};h1={h1}"
 
 
 def razorpay_event_id(payload: dict[str, Any]) -> str | None:

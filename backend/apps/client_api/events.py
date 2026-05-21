@@ -45,6 +45,7 @@ EVENT_MESSAGE_NEW = "message_new"
 EVENT_ASSIGNMENT_CHANGED = "assignment_changed"
 EVENT_TYPING = "typing"
 EVENT_CHAT_STATE_CHANGED = "chat_state_changed"
+EVENT_AI_SKIPPED = "ai_skipped"
 EVENT_NOTIFICATION = "notification"
 
 _QUEUE_MAX = 256

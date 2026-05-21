@@ -84,6 +84,9 @@ class ChatListItem(BaseModel):
     created_at: datetime
     last_message_preview: str | None = None
     ai_paused_until: datetime | None = None
+    pending_since: datetime | None = None
+    sla_breach_at: datetime | None = None
+    agent_typing_active: bool = False
 
 
 class ChatList(BaseModel):
@@ -184,6 +187,23 @@ class DashMessageTotals(BaseModel):
     ai: int = 0
     agent: int = 0
     system: int = 0
+
+
+class DashCostMarginRow(BaseModel):
+    client_id: str
+    business_name: str | None = None
+    entitlement_plan: str | None = None
+    ai_invocations: int = 0
+    estimated_ai_cost_inr: float = 0
+    estimated_revenue_inr: float = 0
+    estimated_margin_inr: float = 0
+
+
+class DashCostMarginOut(BaseModel):
+    period_days: int
+    rows: list[DashCostMarginRow] = Field(default_factory=list)
+    totals: dict[str, float] = Field(default_factory=dict)
+    notes: str = "Estimates use ops_runtime_config metrics.cost_model; not accounting-grade billing."
 
 
 class DashUsageToday(BaseModel):

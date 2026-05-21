@@ -63,6 +63,20 @@ def detect_language(batch_text: str) -> str:
         return "hinglish"
     if has_devanagari:
         return "hi"
+    lowered = batch_text.lower()
+    romanized_hi_hints = (
+        " kya ",
+        " hai",
+        " hain",
+        " nahi",
+        " aap",
+        " mujhe",
+        " namaste",
+        " shukriya",
+        " dhanyavad",
+    )
+    if any(h in f" {lowered} " for h in romanized_hi_hints):
+        return "hinglish"
     return "en"
 
 

@@ -69,6 +69,41 @@ def test_extract_inbound_messages_non_text_uses_placeholder() -> None:
     msgs = extract_inbound_messages(payload)
     assert len(msgs) == 1
     assert msgs[0].text == "[image]"
+    assert msgs[0].message_type == "image"
+    assert msgs[0].text_like is False
+    assert msgs[0].media_metadata["type"] == "image"
+
+
+def test_extract_inbound_messages_interactive_button_is_text_like() -> None:
+    payload = {
+        "entry": [
+            {
+                "changes": [
+                    {
+                        "value": {
+                            "metadata": {"phone_number_id": "999"},
+                            "messages": [
+                                {
+                                    "id": "wamid.button",
+                                    "from": "18005550199",
+                                    "type": "interactive",
+                                    "interactive": {
+                                        "type": "button_reply",
+                                        "button_reply": {"id": "yes", "title": "Yes please"},
+                                    },
+                                }
+                            ],
+                        }
+                    }
+                ]
+            }
+        ]
+    }
+    msgs = extract_inbound_messages(payload)
+    assert len(msgs) == 1
+    assert msgs[0].text == "[button] Yes please"
+    assert msgs[0].message_type == "interactive"
+    assert msgs[0].text_like is True
 
 
 def test_extract_inbound_messages_skips_incomplete_rows() -> None:

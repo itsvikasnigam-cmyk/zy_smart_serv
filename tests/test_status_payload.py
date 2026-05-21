@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from backend.apps.wa_gateway.status_payload import extract_status_events
+from backend.apps.wa_gateway.status_payload import (
+    extract_conversation_window_hints,
+    extract_status_events,
+)
 
 
 def test_extract_status_events_maps_status_strings() -> None:
@@ -74,3 +77,31 @@ def test_extract_status_events_skips_missing_id() -> None:
 
 def test_extract_status_events_empty() -> None:
     assert extract_status_events({}) == []
+
+
+def test_extract_conversation_window_hints_from_status() -> None:
+    payload = {
+        "entry": [
+            {
+                "changes": [
+                    {
+                        "value": {
+                            "statuses": [
+                                {
+                                    "id": "wamid.sw",
+                                    "status": "sent",
+                                    "recipient_id": "919876543210",
+                                    "conversation": {"expiration_timestamp": "1716307200"},
+                                }
+                            ],
+                        }
+                    }
+                ]
+            }
+        ]
+    }
+    hints = extract_conversation_window_hints(payload)
+    assert len(hints) == 1
+    assert hints[0].meta_message_id == "wamid.sw"
+    assert hints[0].recipient_wa_id == "919876543210"
+    assert hints[0].expires_at is not None

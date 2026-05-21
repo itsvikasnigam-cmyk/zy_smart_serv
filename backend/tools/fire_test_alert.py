@@ -42,6 +42,7 @@ def main() -> int:
         print(f"OK: inserted alert {alert_type} (dedupe_key={dedupe_key})")
         print("Check super-admin Runs tab for trigger_type=alert, or:")
         print("  SELECT id, trigger_type, created_at FROM ops_run_logs ORDER BY created_at DESC LIMIT 5;")
+        print("  python backend\\tools\\list_ops_tasks.py --status open")
     else:
         print("SKIP: duplicate dedupe_key (alert not inserted, no new run)")
     return 0

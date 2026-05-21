@@ -13,8 +13,13 @@ from sqlalchemy import text
 from sqlalchemy.engine import Connection
 
 from backend.apps.ai_engine.helpers.respond_logic import NEEDS_OWNER_DATA_CUSTOMER_REPLY_FIXED
+from backend.shared.config import settings as _settings
+from backend.shared.customer_blocks import lookup_customer_block
 from backend.shared.db import engine
 from backend.shared.inbox_notify import notify_handoff_states
+from backend.shared.inbox_typing_lock import has_active_agent_typing, is_typing_lock_enabled
+from backend.shared.observability import new_trace_id, record_misfire_safe, record_trace_safe
+from backend.shared.product_config import load_paywall_reply
 from backend.workers.usage_metrics_common import (
     load_daily_inbound_limits_json,
     plan_soft_hard,
@@ -386,6 +391,63 @@ def run_once() -> int:
                 processed += 1
                 continue
 
+            if is_typing_lock_enabled(conn):
+                typing_active, typing_user_id = has_active_agent_typing(conn, str(chat_id))
+                if typing_active:
+                    record_misfire_safe(
+                        engine,
+                        source="batch_processor",
+                        reason="agent_typing_active",
+                        client_id=str(client_id),
+                        chat_id=str(chat_id),
+                        batch_text_preview=batch_text[:500],
+                        detail={
+                            "batch_id": str(batch_id),
+                            "typing_user_id": typing_user_id,
+                        },
+                    )
+                    _emit_chat_event_notify(
+                        conn,
+                        client_id=str(client_id),
+                        event="ai_skipped",
+                        data={
+                            "chat_id": str(chat_id),
+                            "batch_id": str(batch_id),
+                            "reason": "agent_typing_active",
+                            "typing_user_id": typing_user_id,
+                        },
+                    )
+                    conn.execute(
+                        text(
+                            """
+                            UPDATE inbox_inbound_batches
+                            SET status='PROCESSED'
+                            WHERE id=CAST(:id AS uuid)
+                            """
+                        ),
+                        {"id": str(batch_id)},
+                    )
+                    processed += 1
+                    continue
+
+            if lookup_customer_block(
+                conn,
+                client_id=str(client_id),
+                customer_phone_e164=str(customer_phone),
+            ):
+                conn.execute(
+                    text(
+                        """
+                        UPDATE inbox_inbound_batches
+                        SET status='PROCESSED'
+                        WHERE id=CAST(:id AS uuid)
+                        """
+                    ),
+                    {"id": str(batch_id)},
+                )
+                processed += 1
+                continue
+
             # Second-line paywall (Chat C): OPEN batch may still seal after Chat B gateway allowed ingest.
             limits_root = load_daily_inbound_limits_json(conn)
             crow = _fetch_client_row(conn, str(client_id))
@@ -399,7 +461,6 @@ def run_once() -> int:
                     limits_root=limits_root,
                 )
                 if block_reason:
-                    paywall_body = _load_service_inactive_reply(conn)
                     idem = f"paywall:{block_reason}:{client_id}:{idem_suffix or 'na'}"[:512]
                     _enqueue_paywall_outbox(
                         conn,
@@ -408,7 +469,7 @@ def run_once() -> int:
                         to_phone=str(customer_phone),
                         from_wa_number_id=str(waba_number_id) if waba_number_id else None,
                         idempotency_key=idem,
-                        body=paywall_body,
+                        body=load_paywall_reply(conn, block_reason),
                     )
                     conn.execute(
                         text(
@@ -430,8 +491,11 @@ def run_once() -> int:
                 "intent": "unknown",
                 "routing_intent": "general",
             }
+            trace_id = new_trace_id()
+            ai_timeout = float(_settings.batch_ai_engine_timeout_seconds)
+            t_ai = time.perf_counter()
             try:
-                with httpx.Client(timeout=10.0) as client:
+                with httpx.Client(timeout=ai_timeout) as client:
                     r = client.post(
                         f"{AI_ENGINE_URL}/ai/respond",
                         json={
@@ -441,6 +505,7 @@ def run_once() -> int:
                             "customer_phone": str(customer_phone),
                             "batch_text": batch_text,
                         },
+                        headers={"X-Trace-Id": trace_id},
                     )
                     r.raise_for_status()
                     raw_ai = r.json()
@@ -448,7 +513,39 @@ def run_once() -> int:
                         ai = apply_u2_strict_after_ai(raw_ai)
                     else:
                         ai = {"action": "HANDOFF", "handoff_reason": "ai_invalid_response"}
-            except Exception:
+                record_trace_safe(
+                    engine,
+                    trace_id=trace_id,
+                    service="batch_processor",
+                    route="POST /ai/respond",
+                    latency_ms=int((time.perf_counter() - t_ai) * 1000),
+                    status="ok",
+                    client_id=str(client_id),
+                    chat_id=str(chat_id),
+                    meta={"intent": ai.get("intent"), "action": ai.get("action")},
+                )
+            except Exception as exc:
+                record_trace_safe(
+                    engine,
+                    trace_id=trace_id,
+                    service="batch_processor",
+                    route="POST /ai/respond",
+                    latency_ms=int((time.perf_counter() - t_ai) * 1000),
+                    status="error",
+                    client_id=str(client_id),
+                    chat_id=str(chat_id),
+                    meta={"error": str(exc)[:500]},
+                )
+                record_misfire_safe(
+                    engine,
+                    source="batch_processor",
+                    reason="ai_unavailable",
+                    trace_id=trace_id,
+                    client_id=str(client_id),
+                    chat_id=str(chat_id),
+                    batch_text_preview=batch_text[:500],
+                    detail={"error": str(exc)[:500]},
+                )
                 ai = {"action": "HANDOFF", "handoff_reason": "ai_unavailable"}
 
             action = ai.get("action") or "REPLY"

@@ -1,14 +1,35 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# Repo root (parent of backend/) — env files resolve here regardless of process cwd.
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_ENV_FILES = (
+    _REPO_ROOT / ".env",
+    _REPO_ROOT / "backend" / ".env",
+)
+
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=tuple(str(p) for p in _ENV_FILES if p.exists()) or None,
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
 
     app_env: str = Field(default="dev", description="dev|staging|prod")
     database_url: str = Field(default="postgresql+psycopg://postgres:postgres@localhost:5432/zysmart")
+
+    zy_base_dir: str = Field(
+        default="",
+        description=(
+            "Workspace root for logs/exports/models. Dev: repo path on C:. "
+            "Prod (Option C): e.g. D:\\zy-smart-ai. Empty = auto-detect repo root."
+        ),
+    )
 
     meta_app_secret: str = Field(default="", description="Meta app secret for webhook signature validation")
     meta_verify_token: str = Field(default="change-me", description="Meta webhook verify token")
@@ -150,13 +171,60 @@ class Settings(BaseSettings):
         ge=15.0,
         description="Sleep between alert_eval_worker evaluations (M7 spike → ops_alert_events).",
     )
+    inbox_sla_watchdog_sleep_seconds: float = Field(
+        default=60.0,
+        ge=15.0,
+        description="Sleep between inbox_sla_watchdog ticks (owner-wait 4h/8h + agent SLA).",
+    )
+    batch_ai_engine_timeout_seconds: float = Field(
+        default=120.0,
+        ge=5.0,
+        description="httpx timeout for batch_processor -> POST /ai/respond (Gate 2 local LLM needs more than 10s).",
+    )
     ops_alert_slack_webhook_url: str = Field(
         default="",
         description="Optional Slack incoming webhook for new ops_alert_events (overrides DB if set).",
     )
 
-    # ai_engine (M1): optional OpenAI-compatible chat completions (primary + judge).
-    # When AI_LLM_API_KEY is empty, /ai/respond stays on deterministic routing for all paths.
+    # Chat X: optional Redis (Postgres remains source of truth; Redis is best-effort).
+    redis_enabled: bool = Field(
+        default=False,
+        description="Master switch. When false, dedupe mirror and telemetry buffer are no-ops.",
+    )
+    redis_url: str = Field(
+        default="redis://127.0.0.1:6379/0",
+        description="Redis connection URL (redis://host:port/db).",
+    )
+    redis_dedupe_mirror_enabled: bool = Field(
+        default=True,
+        description="When redis_enabled, mirror processed:{meta_msg_id} keys at gateway.",
+    )
+    redis_dedupe_ttl_seconds: int = Field(
+        default=604800,
+        ge=3600,
+        description="TTL for processed:{meta_msg_id} dedupe mirror keys (default 7 days).",
+    )
+    redis_telemetry_buffer_enabled: bool = Field(
+        default=True,
+        description="When redis_enabled, XADD trace payloads to a Redis stream before/alongside PG.",
+    )
+    redis_telemetry_stream_key: str = Field(
+        default="zy:telemetry:buffer",
+        description="Redis stream key for buffered telemetry_trace rows.",
+    )
+
+    # Chat Y: GPU VRAM sentinel (Redis keys or file under ZY_BASE_DIR/logs).
+    gpu_redis_key_prefix: str = Field(
+        default="gpu:4090",
+        description="Redis key prefix for GPU sentinel (status at gpu:4090:status).",
+    )
+    gpu_sentinel_state_file: str = Field(
+        default="logs/gpu_sentinel_state.json",
+        description="File fallback when Redis disabled or unreachable.",
+    )
+
+    # ai_engine (M1 / Gate 2): optional OpenAI-compatible chat completions (primary + judge).
+    # Empty API key + local base URL (e.g. Ollama :11434) uses placeholder bearer when ai.fallback.enabled.
     ai_llm_base_url: str = Field(
         default="https://api.openai.com/v1",
         description="Base URL for OpenAI-compatible Chat Completions (no trailing path).",

@@ -48,6 +48,40 @@ class InboundMessage:
     timestamp: int | None
     text: str
     raw: dict[str, Any]
+    message_type: str
+    text_like: bool
+    media_metadata: dict[str, Any]
+
+
+def _media_metadata(msg: dict[str, Any], msg_type: str) -> dict[str, Any]:
+    data = msg.get(msg_type)
+    if not isinstance(data, dict):
+        return {"type": msg_type}
+    keys = ("id", "mime_type", "sha256", "filename", "caption")
+    out = {k: data.get(k) for k in keys if data.get(k) is not None}
+    out["type"] = msg_type
+    return out
+
+
+def _interactive_text(msg: dict[str, Any]) -> str | None:
+    data = msg.get("interactive")
+    if not isinstance(data, dict):
+        return None
+    i_type = str(data.get("type") or "").strip()
+    if i_type == "button_reply":
+        reply = data.get("button_reply") or {}
+        if isinstance(reply, dict):
+            title = str(reply.get("title") or "").strip()
+            return f"[button] {title}" if title else None
+    if i_type == "list_reply":
+        reply = data.get("list_reply") or {}
+        if isinstance(reply, dict):
+            title = str(reply.get("title") or "").strip()
+            desc = str(reply.get("description") or "").strip()
+            if title and desc:
+                return f"[list] {title} - {desc}"
+            return f"[list] {title}" if title else None
+    return None
 
 
 def extract_inbound_messages(payload: dict[str, Any]) -> list[InboundMessage]:
@@ -69,22 +103,43 @@ def extract_inbound_messages(payload: dict[str, Any]) -> list[InboundMessage]:
                 if not meta_msg_id or not from_phone:
                     continue
 
-                msg_type = msg.get("type")
+                msg_type = str(msg.get("type") or "unknown")
                 text = ""
+                text_like = False
+                media_meta: dict[str, Any] = {}
                 if msg_type == "text":
                     text = ((msg.get("text") or {}).get("body")) or ""
+                    text_like = True
+                elif msg_type == "button":
+                    text = str((msg.get("button") or {}).get("text") or "[button]").strip()
+                    text_like = True
+                elif msg_type == "interactive":
+                    text = _interactive_text(msg) or "[interactive]"
+                    text_like = text != "[interactive]"
                 else:
-                    # We will implement media fetch + STT later. For now, capture the type.
-                    text = f"[{msg_type or 'unknown'}]"
+                    # Store useful metadata, but do not pass media to the text LLM path yet.
+                    text = f"[{msg_type}]"
+                    media_meta = _media_metadata(msg, msg_type)
+
+                ts_raw = msg.get("timestamp")
+                ts: int | None = None
+                if ts_raw is not None:
+                    try:
+                        ts = int(ts_raw)
+                    except (TypeError, ValueError):
+                        ts = None
 
                 out.append(
                     InboundMessage(
                         meta_msg_id=str(meta_msg_id),
                         from_phone=str(from_phone),
                         to_phone_number_id=str(to_phone_number_id) if to_phone_number_id else None,
-                        timestamp=int(msg.get("timestamp")) if msg.get("timestamp") else None,
+                        timestamp=ts,
                         text=text,
                         raw=msg,
+                        message_type=msg_type,
+                        text_like=text_like,
+                        media_metadata=media_meta,
                     )
                 )
 

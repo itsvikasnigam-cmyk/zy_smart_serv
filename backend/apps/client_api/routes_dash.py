@@ -27,6 +27,8 @@ from .models import (
     DashAdminOverviewOut,
     DashAdminProviderOut,
     DashAgentRow,
+    DashCostMarginOut,
+    DashCostMarginRow,
     DashClientAgentsOut,
     DashClientOverviewOut,
     DashClientQualityOut,
@@ -382,6 +384,56 @@ def dash_admin_collections(_user: AdminDashUser) -> DashAdminCollectionsOut:
         by_status=by_status,
         estimated_mrr_minor_units=0,
     )
+
+
+@router.get("/admin/cost-margin", response_model=DashCostMarginOut)
+def dash_admin_cost_margin(
+    _user: AdminDashUser,
+    days: Annotated[int, Query(ge=1, le=31)] = 30,
+) -> DashCostMarginOut:
+    with engine.begin() as conn:
+        rows = conn.execute(
+            text(
+                """
+                SELECT
+                  c.id::text,
+                  c.business_name,
+                  c.entitlement_plan::text,
+                  COALESCE(SUM(m.ai_invocations), 0)::bigint,
+                  COALESCE(SUM(m.estimated_ai_cost_inr), 0)::float,
+                  COALESCE(SUM(m.estimated_revenue_inr), 0)::float,
+                  COALESCE(SUM(m.estimated_margin_inr), 0)::float
+                FROM api_clients c
+                LEFT JOIN metrics_daily_client m
+                  ON m.client_id = c.id
+                 AND m.metric_date >= (timezone('utc', now()))::date - (:days - 1)
+                GROUP BY c.id, c.business_name, c.entitlement_plan
+                ORDER BY COALESCE(SUM(m.estimated_margin_inr), 0) ASC, lower(COALESCE(c.business_name, ''))
+                LIMIT 200
+                """
+            ),
+            {"days": days},
+        ).all()
+
+    out_rows = [
+        DashCostMarginRow(
+            client_id=r[0],
+            business_name=r[1],
+            entitlement_plan=r[2],
+            ai_invocations=int(r[3] or 0),
+            estimated_ai_cost_inr=float(r[4] or 0),
+            estimated_revenue_inr=float(r[5] or 0),
+            estimated_margin_inr=float(r[6] or 0),
+        )
+        for r in rows
+    ]
+    totals = {
+        "ai_invocations": float(sum(r.ai_invocations for r in out_rows)),
+        "estimated_ai_cost_inr": float(sum(r.estimated_ai_cost_inr for r in out_rows)),
+        "estimated_revenue_inr": float(sum(r.estimated_revenue_inr for r in out_rows)),
+        "estimated_margin_inr": float(sum(r.estimated_margin_inr for r in out_rows)),
+    }
+    return DashCostMarginOut(period_days=days, rows=out_rows, totals=totals)
 
 
 def _dash_provider_detail(provider: str) -> DashAdminProviderOut:

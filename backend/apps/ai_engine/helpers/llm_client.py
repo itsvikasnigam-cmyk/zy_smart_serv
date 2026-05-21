@@ -22,24 +22,34 @@ def openai_chat_completion(
     Works with OpenAI and many proxies that expose the same JSON shape.
     """
     url = base_url.rstrip("/") + "/chat/completions"
-    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    headers: dict[str, str] = {"Content-Type": "application/json"}
+    key = (api_key or "").strip()
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
     body: dict[str, Any] = {
         "model": model,
         "messages": messages,
         "max_tokens": max_tokens,
         "temperature": temperature,
+        "stream": False,
     }
     with httpx.Client(timeout=timeout_seconds) as client:
         r = client.post(url, headers=headers, json=body)
-        r.raise_for_status()
+        if r.status_code >= 400:
+            raise ValueError(f"LLM HTTP {r.status_code}: {r.text[:500]}")
         data = r.json()
     choices = data.get("choices") or []
     if not choices:
-        raise ValueError("LLM response missing choices")
+        raise ValueError(f"LLM response missing choices: {data!r}")
     msg = (choices[0] or {}).get("message") or {}
     content = msg.get("content")
-    if not isinstance(content, str):
-        raise ValueError("LLM response missing string content")
+    if not isinstance(content, str) or not content.strip():
+        # Some Ollama builds put text in ``reasoning`` when ``content`` is empty.
+        reasoning = msg.get("reasoning")
+        if isinstance(reasoning, str) and reasoning.strip():
+            content = reasoning
+    if not isinstance(content, str) or not content.strip():
+        raise ValueError(f"LLM response empty content: {data!r}")
     return content.strip()
 
 
