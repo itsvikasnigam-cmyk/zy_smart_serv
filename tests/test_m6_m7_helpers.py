@@ -38,10 +38,18 @@ def test_validate_template_only_body() -> None:
 
 
 def test_insert_ops_alert_event_mock_conn(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Smoke: insert path; SOP auto-trigger mocked out."""
+    """Smoke: insert path; best-effort follow-up hooks mocked out."""
 
     monkeypatch.setattr(
         "backend.shared.ops_alerts.maybe_trigger_sop_run_for_alert",
+        lambda *a, **k: None,
+    )
+    monkeypatch.setattr(
+        "backend.shared.ops_alerts.maybe_page_slack_for_alert",
+        lambda *a, **k: None,
+    )
+    monkeypatch.setattr(
+        "backend.shared.ops_alerts.maybe_create_ops_task_for_alert",
         lambda *a, **k: None,
     )
 

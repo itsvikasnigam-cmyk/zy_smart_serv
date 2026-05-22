@@ -49,7 +49,9 @@ def _tokenize(text: str) -> list[str]:
 
 def _asks_price(text: str) -> bool:
     lower = (text or "").lower()
-    return any(m in lower for m in _PRICE_MARKERS)
+    if re.search(r"\brs\.?\b", lower):
+        return True
+    return any(m in lower for m in _PRICE_MARKERS if m not in ("rs ", " rs"))
 
 
 def _asks_stock(text: str) -> bool:
