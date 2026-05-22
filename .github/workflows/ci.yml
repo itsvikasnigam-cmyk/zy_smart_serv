@@ -22,7 +22,6 @@ jobs:
       - name: Run unit tests
         env:
           PYTHONPATH: ${{ github.workspace }}
-          DATABASE_URL: ""
         run: python -m pytest tests/ -q --tb=short
 
       # Optional live gateway e2e: start Postgres + gateway + set RUN_WA_GATEWAY_E2E=1 in a follow-up job.

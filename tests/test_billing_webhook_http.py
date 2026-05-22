@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from fastapi.testclient import TestClient
 
@@ -38,9 +38,18 @@ def test_razorpay_webhook_accepts_valid_signature_mock_process() -> None:
     payload = {"id": "evt_ok", "event": "subscription.activated", "payload": {}}
     body = json.dumps(payload).encode("utf-8")
     sig = build_razorpay_signature(body, secret)
+    mock_txn = MagicMock()
+    mock_txn.__enter__.return_value = MagicMock()
+    mock_txn.__exit__.return_value = False
     with patch("backend.apps.billing_api.main.settings") as st:
         st.billing_razorpay_webhook_secret = secret
-        with patch("backend.apps.billing_api.main.process_razorpay_webhook", return_value={"status": "accepted"}):
+        with (
+            patch("backend.apps.billing_api.main.engine.begin", return_value=mock_txn),
+            patch(
+                "backend.apps.billing_api.main.process_razorpay_webhook",
+                return_value={"status": "accepted"},
+            ),
+        ):
             r = client.post(
                 "/webhooks/razorpay",
                 content=body,

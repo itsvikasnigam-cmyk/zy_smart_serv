@@ -56,7 +56,14 @@ def _asks_price(text: str) -> bool:
 
 def _asks_stock(text: str) -> bool:
     lower = (text or "").lower()
-    return any(m in lower for m in _STOCK_MARKERS)
+    if re.search(r"\bstock\b", lower) or re.search(r"\binventory\b", lower):
+        return True
+    for m in _STOCK_MARKERS:
+        if m in ("stock", "inventory"):
+            continue
+        if m in lower:
+            return True
+    return False
 
 
 @dataclass(frozen=True)
