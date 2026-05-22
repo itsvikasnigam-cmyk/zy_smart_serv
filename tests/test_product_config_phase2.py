@@ -14,7 +14,9 @@ def test_phase2_trial_starter_hard_block_35() -> None:
     sw, hb = plan_soft_hard(PHASE2_USAGE_LIMITS, "trial")
     assert sw == 30
     assert hb == 35
-    assert not should_mark_hard(35, hb)
+    # Aligns with usage_metrics_common (>=) and batch/gateway paywall gates.
+    assert not should_mark_hard(34, hb)
+    assert should_mark_hard(35, hb)
     assert should_mark_hard(36, hb)
 
 

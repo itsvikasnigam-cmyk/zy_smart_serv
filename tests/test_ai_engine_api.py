@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import replace
 from unittest.mock import patch
 
+import pytest
 from fastapi.testclient import TestClient
 
 from backend.apps.ai_engine.helpers.runtime_config import default_ai_engine_ops_bundle
@@ -22,6 +23,16 @@ def _minimal_payload(batch_text: str) -> dict:
         "customer_phone": "+15551234567",
         "batch_text": batch_text,
     }
+
+
+@pytest.fixture(autouse=True)
+def _no_db_on_ai_engine_hot_path() -> object:
+    """CI has no Postgres; keep /ai/respond tests deterministic."""
+    with (
+        patch("backend.apps.ai_engine.main.fetch_catalog_items_engine", return_value=[]),
+        patch("backend.apps.ai_engine.main.record_trace_safe"),
+    ):
+        yield
 
 
 @patch(
